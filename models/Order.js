@@ -133,6 +133,18 @@ const orderSchema = new mongoose.Schema({
     ref: 'User'
   },
   cancellationReason: String,
+  // cancellation request workflow
+  cancellationRequested: { type: Boolean, default: false },
+  cancellationRequestReason: String,
+  cancellationRequestedAt: Date,
+  cancellationApprovedAt: Date,
+  cancellationApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  // refund workflow for online payments
+  refundStatus: {
+    type: String,
+    enum: ['none', 'pending', 'refunded'],
+    default: 'none'
+  },
   notes: String,
   commission: {
     type: Number,

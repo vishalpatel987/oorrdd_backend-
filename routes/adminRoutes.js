@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/authMiddleware');
 const adminController = require('../controllers/adminController');
+const orderController = require('../controllers/orderController');
 
 // All routes are protected and admin only
 router.use(protect);
@@ -27,6 +28,17 @@ router.post('/products/bulk-approve', adminController.bulkApproveProducts);
 router.post('/products/bulk-reject', adminController.bulkRejectProducts);
 router.get('/orders', adminController.getOrders);
 router.get('/analytics', adminController.getAnalytics);
+router.get('/orders/cancellation-requests', adminController.getCancellationRequests);
+router.put('/orders/:id/approve-cancel', orderController.adminApproveCancellation);
+router.put('/orders/:id/refund', orderController.adminRefundOrder);
+// Reports
+router.get('/reports/sales', adminController.getSalesReport);
+router.get('/reports/top-products', adminController.getTopProducts);
+router.get('/reports/top-vendors', adminController.getTopVendors);
+
+// Admin earnings (commission) routes
+router.get('/wallet/admin-earnings', adminController.getAdminEarningsSummary);
+router.get('/wallet/admin-earnings/trend', adminController.getAdminEarningsTrend);
 
 // Wallet Management Routes
 router.get('/wallet/overview', adminController.getWalletOverview);

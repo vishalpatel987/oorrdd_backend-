@@ -56,6 +56,10 @@ exports.createOrder = asyncHandler(async (req, res) => {
     const shippingPrice = 0;
     const taxPrice = 0;
     const totalPrice = itemsPrice + shippingPrice + taxPrice - (discount || 0);
+    // Commission & seller earnings (global 7%)
+    const rate = 0.07;
+    const commission = Number((itemsPrice * rate).toFixed(2));
+    const sellerEarnings = Number((itemsPrice - commission).toFixed(2));
     // Save order
     const order = new Order({
       user: userId,
@@ -75,6 +79,8 @@ exports.createOrder = asyncHandler(async (req, res) => {
       taxPrice,
       shippingPrice,
       totalPrice,
+      commission,
+      sellerEarnings,
       orderStatus: 'pending',
       paymentStatus: paymentMethod === 'cod' ? 'pending' : 'pending',
       shippingStatus: 'pending',
@@ -84,14 +90,7 @@ exports.createOrder = asyncHandler(async (req, res) => {
     await order.save();
     createdOrders.push(order);
 
-    // Add commission to seller's wallet balance (COD orders)
-    const commission = (itemsPrice * 0.05); // 5% commission for platform
-    const sellerEarnings = itemsPrice - commission;
-    
-    await User.findByIdAndUpdate(
-      sellerId,
-      { $inc: { walletBalance: sellerEarnings } }
-    );
+    // COD: do NOT credit wallet immediately; credit after delivery in updateOrderStatus
   }
   res.status(201).json({ orders: createdOrders });
 });
@@ -208,6 +207,11 @@ exports.createOrderWithPayment = asyncHandler(async (req, res) => {
       const taxPrice = 0;
       const totalPrice = itemsPrice + shippingPrice + taxPrice - (discount || 0);
 
+      // Commission & seller earnings (global 7%)
+      const rate = 0.07;
+      const commission = Number((itemsPrice * rate).toFixed(2));
+      const sellerEarnings = Number((itemsPrice - commission).toFixed(2));
+
       // Save order with payment details
       const order = new Order({
         user: userId,
@@ -233,6 +237,8 @@ exports.createOrderWithPayment = asyncHandler(async (req, res) => {
         taxPrice,
         shippingPrice,
         totalPrice,
+        commission,
+        sellerEarnings,
         orderStatus: 'confirmed', // Payment successful, so order is confirmed
         paymentStatus: 'paid',
         shippingStatus: 'pending',
@@ -247,13 +253,13 @@ exports.createOrderWithPayment = asyncHandler(async (req, res) => {
       createdOrders.push(order);
 
       // Add commission to seller's wallet balance
-      const commission = (itemsPrice * 0.05); // 5% commission for platform
-      const sellerEarnings = itemsPrice - commission;
-      
-      await User.findByIdAndUpdate(
-        sellerId,
-        { $inc: { walletBalance: sellerEarnings } }
-      );
+      const sellerDocForUser = await Seller.findById(sellerId).select('userId');
+      if (sellerDocForUser?.userId) {
+        await User.findByIdAndUpdate(
+          sellerDocForUser.userId,
+          { $inc: { walletBalance: sellerEarnings } }
+        );
+      }
     }
 
     res.status(201).json({ 
@@ -286,7 +292,7 @@ exports.getOrders = asyncHandler(async (req, res) => {
     const sellerDoc = await Seller.findOne({ userId: userId });
     if (!sellerDoc) return res.json({ orders: [] });
     orders = await Order.find({ seller: sellerDoc._id })
-      .populate('user', 'firstName lastName email')
+      .populate('user', 'name email')
       .populate('orderItems.product', 'name');
   } else {
     // User: fetch orders placed by this user
@@ -312,7 +318,30 @@ exports.updateOrderStatus = asyncHandler(async (req, res) => {
   const { status } = req.body;
   const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ message: 'Order not found', route: req.originalUrl || req.url });
+  // Do not allow updates on cancelled/refunded orders
+  if (order.orderStatus === 'cancelled' || order.refundStatus === 'pending' || order.paymentStatus === 'refunded') {
+    return res.status(400).json({ message: 'Order is cancelled/refunded and cannot be updated' });
+  }
   order.orderStatus = status;
+  // If COD and delivered now, mark paid and credit seller wallet
+  if (order.paymentMethod === 'cod' && status === 'delivered' && order.paymentStatus !== 'paid') {
+    order.paymentStatus = 'paid';
+    // Ensure commission/sellerEarnings exist
+    if (typeof order.commission !== 'number' || typeof order.sellerEarnings !== 'number') {
+      const itemsPrice = order.itemsPrice || (order.orderItems || []).reduce((s, i) => s + (i.price || 0) * (i.quantity || 0), 0);
+      const rate = 0.07;
+      order.commission = Number((itemsPrice * rate).toFixed(2));
+      order.sellerEarnings = Number((itemsPrice - order.commission).toFixed(2));
+    }
+    const Seller = require('../models/Seller');
+    const sellerDocForUser = await Seller.findById(order.seller).select('userId');
+    if (sellerDocForUser?.userId && order.sellerEarnings) {
+      await require('../models/User').findByIdAndUpdate(
+        sellerDocForUser.userId,
+        { $inc: { walletBalance: order.sellerEarnings } }
+      );
+    }
+  }
   await order.save();
   res.json(order);
 });
@@ -328,3 +357,110 @@ exports.cancelOrder = asyncHandler(async (req, res) => {
   await order.save();
   res.json(order);
 }); 
+
+// User: request cancellation (pending admin approval)
+exports.requestCancelOrder = asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  let order = null;
+  // Try by ObjectId first
+  if (id && id.match(/^[0-9a-fA-F]{24}$/)) {
+    order = await Order.findById(id).populate('seller');
+  }
+  // Fallback: try by orderNumber if provided
+  if (!order) {
+    order = await Order.findOne({ orderNumber: id }).populate('seller');
+  }
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  // allow cancel request only if not shipped/delivered/cancelled
+  if (['shipped', 'delivered', 'cancelled', 'refunded'].includes(order.orderStatus)) {
+    return res.status(400).json({ message: 'Order cannot be cancelled at this stage' });
+  }
+  order.cancellationRequested = true;
+  order.cancellationRequestReason = req.body.reason || '';
+  order.cancellationRequestedAt = new Date();
+  await order.save();
+
+  // Notify vendor by email
+  try {
+    const sendEmail = require('../utils/sendEmail');
+    const sellerEmail = order.seller?.email;
+    if (sellerEmail) {
+      await sendEmail({
+        email: sellerEmail,
+        subject: `Order ${order.orderNumber || order._id} cancellation requested`,
+        message: `A customer requested cancellation for order ${order.orderNumber || order._id}. Reason: ${order.cancellationRequestReason}`
+      });
+    }
+  } catch (e) {}
+
+  res.json({ message: 'Cancellation requested. Admin will review this request.' });
+});
+
+// Admin: approve cancellation (no refund here)
+exports.adminApproveCancellation = asyncHandler(async (req, res) => {
+  const OrderModel = require('../models/Order');
+  const Seller = require('../models/Seller');
+  const User = require('../models/User');
+  const order = await OrderModel.findById(req.params.id);
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+
+  order.cancellationApprovedAt = new Date();
+  order.cancellationApprovedBy = req.user._id;
+  order.orderStatus = 'cancelled';
+  // For online orders, mark refund pending to show refund button in admin
+  if (order.paymentMethod !== 'cod') {
+    order.refundStatus = 'pending';
+  }
+
+  await order.save();
+  res.json({ message: 'Order cancellation approved', order });
+});
+
+// Admin: refund now for approved cancellations (online payments)
+exports.adminRefundOrder = asyncHandler(async (req, res) => {
+  const OrderModel = require('../models/Order');
+  const Seller = require('../models/Seller');
+  const User = require('../models/User');
+  const { refundPayment } = require('../utils/razorpay');
+  const sendEmail = require('../utils/sendEmail');
+
+  const order = await OrderModel.findById(req.params.id);
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  if (order.paymentMethod === 'cod') return res.status(400).json({ message: 'COD orders do not require online refund' });
+  if (order.paymentStatus !== 'paid' || order.refundStatus !== 'pending') {
+    return res.status(400).json({ message: 'Refund not applicable' });
+  }
+
+  const paymentId = order.razorpayPaymentId || order.paymentResult?.id;
+  if (!paymentId) return res.status(400).json({ message: 'No payment id to refund' });
+
+  const refundAmount = order.itemsPrice || order.totalPrice || 0;
+  await refundPayment(paymentId, refundAmount);
+  order.paymentStatus = 'refunded';
+  order.refundStatus = 'refunded';
+
+  // Reverse seller wallet if previously credited
+  if (order.sellerEarnings) {
+    const sellerDocForUser = await Seller.findById(order.seller).select('userId');
+    if (sellerDocForUser?.userId) {
+      await User.findByIdAndUpdate(sellerDocForUser.userId, { $inc: { walletBalance: -Math.abs(order.sellerEarnings) } });
+    }
+  }
+
+  await order.save();
+  // Notify customer via email (best-effort)
+  try {
+    const user = await User.findById(order.user);
+    if (user?.email) {
+      await sendEmail({
+        email: user.email,
+        subject: `Refund processed for order ${order.orderNumber || order._id}`,
+        message: `Your refund of INR ${refundAmount} has been processed to your original payment method via Razorpay. It may take 5-7 business days to reflect.`
+      });
+    }
+  } catch (e) {
+    // ignore email errors
+  }
+
+  res.json({ message: 'Refund processed', refundedAmount: refundAmount, order });
+});

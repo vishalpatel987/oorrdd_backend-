@@ -72,6 +72,17 @@ const capturePayment = async (paymentId, amount) => {
   }
 };
 
+// Refund payment
+const refundPayment = async (paymentId, amount) => {
+  try {
+    const payload = amount ? { amount: Math.round(amount * 100) } : {};
+    const refund = await razorpay.payments.refund(paymentId, payload);
+    return refund;
+  } catch (error) {
+    throw new Error(`Payment refund failed: ${error.message}`);
+  }
+};
+
 module.exports = {
   razorpay,
   createRazorpayOrder,
@@ -79,4 +90,5 @@ module.exports = {
   getPaymentDetails,
   getOrderDetails,
   capturePayment,
+  refundPayment,
 };

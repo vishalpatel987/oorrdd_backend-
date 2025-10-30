@@ -82,71 +82,151 @@ const getMe = asyncHandler(async (req, res) => {
   });
 });
 
-// @desc    Forgot password
-// @route   POST /api/auth/forgot-password
-// @access  Public
-const forgotPassword = asyncHandler(async (req, res) => {
-  const { email } = req.body;
-  const user = await User.findOne({ email });
+// (Legacy token-based forgot password removed; using OTP-only flow.)
 
+// -------- OTP-based password reset flow --------
+
+// Helpers
+const generateSixDigitOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+const hashValueSha256 = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
+const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+
+// @desc    Request OTP for password reset
+// @route   POST /api/auth/forgot-password-otp
+// @access  Public
+const requestPasswordResetOTP = asyncHandler(async (req, res) => {
+  const { email: rawEmail } = req.body;
+  const email = normalizeEmail(rawEmail);
+  if (!email) return res.status(400).json({ message: 'Email is required' });
+
+  // Always act on the latest record for this email (handles legacy duplicates)
+  const candidates = await User.find({ email }).sort({ updatedAt: -1 }).limit(1);
+  const user = candidates[0];
   if (!user) {
     return res.status(404).json({ message: 'User not found' });
   }
 
-  // Generate reset token
-  const resetToken = crypto.randomBytes(32).toString('hex');
-  user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-  user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 minutes
+  const otp = generateSixDigitOTP();
+  const hashed = hashValueSha256(otp);
+  const expireAt = new Date(Date.now() + 10 * 60 * 1000);
+  // Update all duplicate records for this email to avoid mismatch issues
+  await User.updateMany(
+    { email },
+    {
+      $set: {
+        resetPasswordOTP: hashed,
+        resetPasswordOTPExpire: expireAt,
+        resetPasswordOTPVerified: false,
+        resetPasswordOTPAttempts: 0
+      }
+    }
+  );
 
-  await user.save();
-
-  // Send email
-  const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password/${resetToken}`;
-  const message = `You are receiving this email because you (or someone else) has requested the reset of a password. Please make a PUT request to: \n\n ${resetUrl}`;
+  const subject = 'Your OTP for Password Reset';
+  const html = `<p>Hi ${user.name || ''},</p>
+    <p>Your OTP for password reset is:</p>
+    <h2 style="letter-spacing:4px">${otp}</h2>
+    <p>This OTP will expire in 10 minutes. If you did not request this, please ignore this email.</p>`;
 
   try {
-    await sendEmail({
-      email: user.email,
-      subject: 'Password reset token',
-      message
-    });
-
-    res.json({ message: 'Email sent' });
+    await sendEmail({ email: user.email, subject, message: `Your OTP is ${otp}`, html });
+    return res.json({ message: 'OTP sent to email' });
   } catch (err) {
-    user.resetPasswordToken = undefined;
-    user.resetPasswordExpire = undefined;
+    // Clean up OTP fields on failure to send
+    user.resetPasswordOTP = undefined;
+    user.resetPasswordOTPExpire = undefined;
+    user.resetPasswordOTPVerified = false;
+    user.resetPasswordOTPAttempts = 0;
     await user.save();
-
-    return res.status(500).json({ message: 'Email could not be sent' });
+    return res.status(500).json({ message: 'Failed to send OTP email' });
   }
 });
 
-// @desc    Reset password
-// @route   PUT /api/auth/reset-password/:token
+// @desc    Verify OTP
+// @route   POST /api/auth/verify-otp
 // @access  Public
-const resetPassword = asyncHandler(async (req, res) => {
-  // Get hashed token
-  const resetPasswordToken = crypto
-    .createHash('sha256')
-    .update(req.params.token)
-    .digest('hex');
+const verifyPasswordResetOTP = asyncHandler(async (req, res) => {
+  const { email: rawEmail, otp } = req.body;
+  const email = normalizeEmail(rawEmail);
+  if (!email || !otp) return res.status(400).json({ message: 'Email and OTP are required' });
 
-  const user = await User.findOne({
-    resetPasswordToken,
-    resetPasswordExpire: { $gt: Date.now() }
-  });
+  // Try to find an active OTP for this email
+  const hashed = hashValueSha256(otp);
+  let user = await User.findOne({
+    email,
+    resetPasswordOTP: { $exists: true, $ne: null },
+    resetPasswordOTPExpire: { $gt: Date.now() }
+  }).sort({ resetPasswordOTPExpire: -1, updatedAt: -1 });
 
+  // If not found by active window, try exact hash match across recent records
   if (!user) {
-    return res.status(400).json({ message: 'Invalid reset token' });
+    user = await User.findOne({ email, resetPasswordOTP: hashed }).sort({ updatedAt: -1 });
   }
 
-  // Set new password
-  user.password = req.body.password;
+  if (!user || !user.resetPasswordOTP || !user.resetPasswordOTPExpire) {
+    return res.status(400).json({ message: 'No OTP requested' });
+  }
+
+  if ((user.resetPasswordOTPAttempts || 0) >= 5) {
+    return res.status(429).json({ message: 'Too many attempts. Please request a new OTP.' });
+  }
+
+  if (Date.now() > new Date(user.resetPasswordOTPExpire).getTime()) {
+    return res.status(400).json({ message: 'OTP expired' });
+  }
+  if (hashed !== user.resetPasswordOTP) {
+    user.resetPasswordOTPAttempts = (user.resetPasswordOTPAttempts || 0) + 1;
+    await user.save();
+    return res.status(400).json({ message: 'Invalid OTP' });
+  }
+
+  user.resetPasswordOTPVerified = true;
+  await user.save();
+  return res.json({ message: 'OTP verified successfully' });
+});
+
+// @desc    Reset password using OTP
+// @route   PUT /api/auth/reset-password-otp
+// @access  Public
+const resetPasswordWithOTP = asyncHandler(async (req, res) => {
+  const { email: rawEmail, otp, password, confirmPassword } = req.body;
+  const email = normalizeEmail(rawEmail);
+  if (!email || !password || !confirmPassword) {
+    return res.status(400).json({ message: 'Email, password and confirmPassword are required' });
+  }
+  if (password !== confirmPassword) {
+    return res.status(400).json({ message: 'Passwords do not match' });
+  }
+  // Build a query to select the record that either has a verified OTP in window
+  // or matches the provided OTP within the active window.
+  const now = Date.now();
+  const latestUser = await User.find({ email }).sort({ resetPasswordOTPExpire: -1, updatedAt: -1 }).limit(1).select('+password');
+  const user = latestUser[0];
+  if (!user) return res.status(404).json({ message: 'User not found' });
+
+  const hasValidWindow = user.resetPasswordOTPExpire && now <= new Date(user.resetPasswordOTPExpire).getTime();
+  let otpValid = false;
+  if (otp) {
+    const hashed = hashValueSha256(otp);
+    otpValid = user.resetPasswordOTP && hashed === user.resetPasswordOTP && hasValidWindow;
+  }
+
+  if (!(otpValid || (user.resetPasswordOTPVerified && hasValidWindow))) {
+    return res.status(400).json({ message: 'OTP not verified or expired' });
+  }
+
+  user.password = password;
+  // Clear OTP related fields
+  user.resetPasswordOTP = undefined;
+  user.resetPasswordOTPExpire = undefined;
+  user.resetPasswordOTPVerified = false;
+  user.resetPasswordOTPAttempts = 0;
+  // Also clear any old token-based fields
   user.resetPasswordToken = undefined;
   user.resetPasswordExpire = undefined;
   await user.save();
 
-  res.json({ message: 'Password reset successful' });
+  return res.json({ message: 'Password changed successfully' });
 });
 
 // @desc    Verify email
@@ -163,7 +243,8 @@ module.exports = {
   register,
   login,
   getMe,
-  forgotPassword,
-  resetPassword,
-  verifyEmail
+  verifyEmail,
+  requestPasswordResetOTP,
+  verifyPasswordResetOTP,
+  resetPasswordWithOTP
 }; 

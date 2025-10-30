@@ -15,19 +15,50 @@ const {
 // @access  Private (Seller only)
 exports.createWithdrawalRequest = asyncHandler(async (req, res) => {
   const { amount, paymentMethod, paymentDetails } = req.body;
-  const sellerId = req.user._id;
+  const sellerId = req.user._id; // This is the User id for the seller
 
-  // Validate seller has sufficient balance
-  const seller = await User.findById(sellerId);
-  if (!seller) {
+  // Validate seller exists
+  const sellerUser = await User.findById(sellerId);
+  if (!sellerUser) {
     return res.status(404).json({ message: 'Seller not found' });
   }
 
-  if (seller.walletBalance < amount) {
-    return res.status(400).json({ 
+  // Compute available balance from Orders minus processed Withdrawals
+  // Find Seller document to get Seller _id for Orders
+  const SellerModel = require('../models/Seller');
+  const OrderModel = require('../models/Order');
+  const sellerDoc = await SellerModel.findOne({ userId: sellerId });
+  if (!sellerDoc) {
+    return res.status(404).json({ message: 'Seller profile not found' });
+  }
+
+  // Earnings rules match sellerController.getWalletOverview
+  const [onlineEarningsAgg, codEarningsAgg] = await Promise.all([
+    OrderModel.aggregate([
+      { $match: { seller: sellerDoc._id, paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' } },
+      { $project: { sellerEarnEff: { $cond: [ { $gt: ['$sellerEarnings', 0] }, '$sellerEarnings', { $subtract: ['$itemsPrice', { $multiply: ['$itemsPrice', 0.07] }] } ] } } },
+      { $group: { _id: null, total: { $sum: '$sellerEarnEff' } } }
+    ]),
+    OrderModel.aggregate([
+      { $match: { seller: sellerDoc._id, paymentMethod: 'cod', orderStatus: 'delivered' } },
+      { $project: { sellerEarnEff: { $cond: [ { $gt: ['$sellerEarnings', 0] }, '$sellerEarnings', { $subtract: ['$itemsPrice', { $multiply: ['$itemsPrice', 0.07] }] } ] } } },
+      { $group: { _id: null, total: { $sum: '$sellerEarnEff' } } }
+    ])
+  ]);
+
+  const totalEarnings = (onlineEarningsAgg[0]?.total || 0) + (codEarningsAgg[0]?.total || 0);
+  const processedWithdrawalsAgg = await Withdrawal.aggregate([
+    { $match: { seller: sellerId, status: 'processed' } },
+    { $group: { _id: null, total: { $sum: '$amount' } } }
+  ]);
+  const withdrawnAmount = processedWithdrawalsAgg[0]?.total || 0;
+  const availableBalance = Math.max(0, totalEarnings - withdrawnAmount);
+
+  if (Number(amount) > availableBalance) {
+    return res.status(400).json({
       message: 'Insufficient wallet balance',
-      currentBalance: seller.walletBalance,
-      requestedAmount: amount
+      currentBalance: availableBalance,
+      requestedAmount: Number(amount)
     });
   }
 
@@ -53,46 +84,89 @@ exports.createWithdrawalRequest = asyncHandler(async (req, res) => {
     });
   }
 
+  // If Razorpay credentials are not configured, fall back to creating a pending request without Razorpay IDs (dev mode)
+  let hasRazorpayKeys = !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET && process.env.RAZORPAY_ACCOUNT_NUMBER);
+
   try {
-    // Create Razorpay Contact
-    const contact = await createContact(
-      seller.name,
-      seller.email,
-      seller.phone || '9999999999' // Default phone if not available
-    );
+    let contact = null;
+    let fundAccount = null;
+    if (hasRazorpayKeys) {
+      try {
+        // Create Razorpay Contact
+        contact = await createContact(
+          sellerUser.name,
+          sellerUser.email,
+          sellerUser.phone || '9999999999'
+        );
 
-    // Create Razorpay Fund Account
-    const fundAccount = await createFundAccount(
-      contact.id,
-      paymentMethod,
-      paymentDetails
-    );
+        // Create Razorpay Fund Account
+        fundAccount = await createFundAccount(
+          contact.id,
+          paymentMethod,
+          paymentDetails
+        );
+      } catch (e) {
+        // Fall back to non-Razorpay flow in development or when keys are misconfigured
+        console.error('Razorpay setup failed, falling back to manual request creation:', e.message);
+        hasRazorpayKeys = false;
+      }
+    }
 
-    // Create withdrawal request with Razorpay details
+    // Create withdrawal request; include Razorpay IDs when available
     const withdrawal = await Withdrawal.create({
       seller: sellerId,
-      amount,
+      amount: Number(amount),
       paymentMethod,
       paymentDetails: {
         ...paymentDetails,
-        razorpayContactId: contact.id,
-        razorpayFundAccountId: fundAccount.id
+        ...(hasRazorpayKeys && contact ? { razorpayContactId: contact.id } : {}),
+        ...(hasRazorpayKeys && fundAccount ? { razorpayFundAccountId: fundAccount.id } : {})
       },
       requestDate: new Date()
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       data: withdrawal,
-      message: 'Withdrawal request created successfully'
+      message: hasRazorpayKeys
+        ? 'Withdrawal request created successfully'
+        : 'Withdrawal request created (Razorpay not configured: pending manual processing)'
     });
   } catch (error) {
     console.error('Withdrawal request creation error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       message: 'Failed to create withdrawal request',
       error: error.message
     });
   }
+});
+
+// @desc    Get seller's own withdrawal requests
+// @route   GET /api/withdrawals/mine
+// @access  Private (Seller only)
+exports.getSellerWithdrawalRequests = asyncHandler(async (req, res) => {
+  const sellerId = req.user._id;
+  const { page = 1, limit = 10 } = req.query;
+
+  const query = { seller: sellerId };
+
+  const withdrawals = await Withdrawal.find(query)
+    .sort({ requestDate: -1 })
+    .limit(Number(limit))
+    .skip((Number(page) - 1) * Number(limit));
+
+  const total = await Withdrawal.countDocuments(query);
+
+  res.status(200).json({
+    success: true,
+    data: withdrawals,
+    pagination: {
+      currentPage: Number(page),
+      totalPages: Math.ceil(total / Number(limit)),
+      totalItems: total,
+      itemsPerPage: Number(limit)
+    }
+  });
 });
 
 // @desc    Get all withdrawal requests (for admin)
@@ -116,13 +190,21 @@ exports.getAllWithdrawalRequests = asyncHandler(async (req, res) => {
         { email: { $regex: search, $options: 'i' } }
       ]
     }).select('_id');
-    
+
     const sellerIds = sellers.map(seller => seller._id);
-    
-    query.$or = [
-      { _id: { $regex: search, $options: 'i' } },
-      { seller: { $in: sellerIds } }
-    ];
+
+    const orConds = [ { seller: { $in: sellerIds } } ];
+
+    // Match by Withdrawal ObjectId when valid
+    const mongoose = require('mongoose');
+    if (mongoose.Types.ObjectId.isValid(search)) {
+      orConds.push({ _id: new mongoose.Types.ObjectId(search) });
+    }
+    // Also try transactionId/notes match
+    orConds.push({ transactionId: { $regex: search, $options: 'i' } });
+    orConds.push({ notes: { $regex: search, $options: 'i' } });
+
+    query.$or = orConds;
   }
 
   const withdrawals = await Withdrawal.find(query)
@@ -186,25 +268,30 @@ exports.updateWithdrawalStatus = asyncHandler(async (req, res) => {
   if (status === 'approved') {
     withdrawal.approvedBy = adminId;
     withdrawal.approvedDate = new Date();
-  } else if (status === 'processed') {
+  } else if (status === 'processing') {
+    // No payout yet, just mark as in-progress by admin
+    withdrawal.approvedBy = withdrawal.approvedBy || adminId;
+    withdrawal.approvedDate = withdrawal.approvedDate || new Date();
+  } else if (status === 'processed' || status === 'paid') {
     try {
-      // Create Razorpay Payout
-      const payout = await createPayout(
-        withdrawal.paymentDetails.razorpayFundAccountId,
-        withdrawal.amount
-      );
+      const hasKeys = !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET && process.env.RAZORPAY_ACCOUNT_NUMBER);
+      let payout = null;
+      if (hasKeys && withdrawal.paymentDetails?.razorpayFundAccountId) {
+        // Create Razorpay Payout when configured
+        payout = await createPayout(
+          withdrawal.paymentDetails.razorpayFundAccountId,
+          withdrawal.amount
+        );
+        withdrawal.razorpayPayoutId = payout.id;
+        withdrawal.razorpayStatus = payout.status;
+      } else {
+        // Manual processing path: allow admin to enter transactionId and mark processed
+        withdrawal.razorpayStatus = 'manual';
+      }
 
       withdrawal.processedBy = adminId;
       withdrawal.processedDate = new Date();
-      withdrawal.transactionId = transactionId || payout.id;
-      withdrawal.razorpayPayoutId = payout.id;
-      withdrawal.razorpayStatus = payout.status;
-      
-      // Deduct amount from seller's wallet balance
-      await User.findByIdAndUpdate(
-        withdrawal.seller._id,
-        { $inc: { walletBalance: -withdrawal.amount } }
-      );
+      withdrawal.transactionId = transactionId || payout?.id || `manual_${Date.now()}`;
     } catch (error) {
       console.error('Razorpay payout creation error:', error);
       return res.status(500).json({
@@ -220,10 +307,10 @@ exports.updateWithdrawalStatus = asyncHandler(async (req, res) => {
 
   await withdrawal.save();
 
-  res.status(200).json({
+      res.status(200).json({
     success: true,
     data: withdrawal,
-    message: `Withdrawal ${status} successfully`
+        message: `Withdrawal ${status} successfully`
   });
 });
 
@@ -234,7 +321,9 @@ exports.getWithdrawalSummary = asyncHandler(async (req, res) => {
   const totalRequests = await Withdrawal.countDocuments();
   const pendingRequests = await Withdrawal.countDocuments({ status: 'pending' });
   const approvedRequests = await Withdrawal.countDocuments({ status: 'approved' });
-  const processedRequests = await Withdrawal.countDocuments({ status: 'processed' });
+  // "Processed" dashboard count should include only requests in progress or marked processed by admin,
+  // but NOT paid and NOT rejected
+  const processedRequests = await Withdrawal.countDocuments({ $or: [ { status: 'processing' }, { status: 'processed' } ] });
   const rejectedRequests = await Withdrawal.countDocuments({ status: 'rejected' });
 
   // Calculate total amounts
@@ -247,8 +336,9 @@ exports.getWithdrawalSummary = asyncHandler(async (req, res) => {
     { $group: { _id: null, total: { $sum: '$amount' } } }
   ]);
 
+  // Amount actually paid out
   const processedAmount = await Withdrawal.aggregate([
-    { $match: { status: 'processed' } },
+    { $match: { status: 'paid' } },
     { $group: { _id: null, total: { $sum: '$amount' } } }
   ]);
 
@@ -354,4 +444,25 @@ exports.checkPayoutStatus = asyncHandler(async (req, res) => {
       error: error.message
     });
   }
+});
+
+// @desc    Delete a withdrawal (admin)
+// @route   DELETE /api/withdrawals/admin/:id
+// @access  Private (Admin only)
+exports.adminDeleteWithdrawal = asyncHandler(async (req, res) => {
+  const withdrawal = await Withdrawal.findById(req.params.id);
+  if (!withdrawal) return res.status(404).json({ message: 'Withdrawal not found' });
+  await Withdrawal.deleteOne({ _id: withdrawal._id });
+  res.status(200).json({ success: true, message: 'Withdrawal deleted' });
+});
+
+// @desc    Delete seller's own withdrawal request
+// @route   DELETE /api/withdrawals/:id
+// @access  Private (Seller only)
+exports.deleteMyWithdrawal = asyncHandler(async (req, res) => {
+  const sellerId = req.user._id;
+  const withdrawal = await Withdrawal.findOne({ _id: req.params.id, seller: sellerId });
+  if (!withdrawal) return res.status(404).json({ message: 'Withdrawal not found' });
+  await Withdrawal.deleteOne({ _id: withdrawal._id });
+  res.status(200).json({ success: true, message: 'Withdrawal deleted' });
 });

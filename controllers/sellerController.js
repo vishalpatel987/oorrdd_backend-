@@ -212,7 +212,7 @@ exports.createProduct = async (req, res) => {
 
     // Parse and convert fields
     const {
-      name, description, shortDescription, price, comparePrice, subCategory, brand, sku, stock, lowStockThreshold, weight, dimensions, variants, tags, shippingInfo, seo
+      name, description, shortDescription, price, comparePrice, subCategory, brand, sku, stock, lowStockThreshold, weight, weightUnit, dimensions, variants, tags, shippingInfo, seo
     } = req.body;
 
     // Convert numeric fields
@@ -221,6 +221,7 @@ exports.createProduct = async (req, res) => {
     const stockNum = stock ? Number(stock) : undefined;
     const lowStockThresholdNum = lowStockThreshold ? Number(lowStockThreshold) : undefined;
     const weightNum = weight ? Number(weight) : undefined;
+    const weightUnitStr = (weightUnit === 'g' || weightUnit === 'kg') ? weightUnit : 'kg';
 
     // Parse features and specifications
     let featuresArr = [];
@@ -259,11 +260,27 @@ exports.createProduct = async (req, res) => {
       }
     }
 
+    // Compute weight-based shipping charge and bake into product price
+    const grams = (weightNum || 0) * (weightUnitStr === 'g' ? 1 : 1000);
+    let shippingCharge = 0;
+    if (grams > 0 && grams <= 500) shippingCharge = 45;
+    else if (grams > 500 && grams <= 1000) shippingCharge = 75;
+    else if (grams > 1000 && grams <= 1500) shippingCharge = 110;
+    else if (grams > 1500) shippingCharge = 235; // up to and beyond 2kg capped to last tier
+
+    const finalPrice = (priceNum || 0) + shippingCharge;
+
+    // Normalize incoming shippingInfo object (avoid undefined nested objects)
+    let incomingShipping = (typeof shippingInfo === 'object' && shippingInfo !== null) ? shippingInfo : {};
+    if (incomingShipping && typeof incomingShipping.dimensions === 'undefined') {
+      delete incomingShipping.dimensions;
+    }
+
     const product = new Product({
       name,
       description,
       shortDescription,
-      price: priceNum,
+      price: finalPrice,
       comparePrice: comparePriceNum,
       images: imageUrls,
       category: categoryId,
@@ -274,12 +291,18 @@ exports.createProduct = async (req, res) => {
       stock: stockNum,
       lowStockThreshold: lowStockThresholdNum,
       weight: weightNum,
+      weightUnit: weightUnitStr,
       dimensions,
       variants: variantsArr,
       specifications: specificationsArr,
       features: featuresArr,
       tags,
-      shippingInfo,
+      shippingInfo: {
+        ...incomingShipping,
+        weight: weightNum,
+        freeShipping: true,
+        shippingCost: shippingCharge
+      },
       seo,
       isActive: true,
       isApproved: false // Admin approval required
@@ -325,7 +348,7 @@ exports.updateProduct = async (req, res) => {
 
     // Parse fields from req.body
     const {
-      name, description, shortDescription, price, comparePrice, category, subCategory, brand, sku, stock, lowStockThreshold, weight, dimensions, variants, tags, shippingInfo, seo, features, specifications
+      name, description, shortDescription, price, comparePrice, category, subCategory, brand, sku, stock, lowStockThreshold, weight, weightUnit, dimensions, variants, tags, shippingInfo, seo, features, specifications
     } = req.body;
 
     // Parse features and specifications
@@ -342,26 +365,60 @@ exports.updateProduct = async (req, res) => {
       }
     }
 
+    // Compute weight-based shipping charge and final price (idempotent)
+    const weightNum = (weight !== undefined && weight !== '') ? Number(weight) : (product.weight || 0);
+    const weightUnitStr = (weightUnit === 'g' || weightUnit === 'kg') ? weightUnit : (product.weightUnit || 'kg');
+    const grams = (weightNum || 0) * (weightUnitStr === 'g' ? 1 : 1000);
+    let shippingCharge = 0;
+    if (grams > 0 && grams <= 500) shippingCharge = 45;
+    else if (grams > 500 && grams <= 1000) shippingCharge = 75;
+    else if (grams > 1000 && grams <= 1500) shippingCharge = 110;
+    else if (grams > 1500) shippingCharge = 235; // up to and beyond 2kg capped to last tier
+
+    // Derive base price: if incoming price provided, treat it as BASE (without shipping);
+    // otherwise, subtract old shipping from stored price to get base.
+    const incomingPriceProvided = (price !== undefined && price !== '');
+    const basePrice = incomingPriceProvided
+      ? Number(price)
+      : (Number(product.price || 0) - Number(product.shippingInfo?.shippingCost || 0));
+    const finalPrice = (isNaN(basePrice) ? 0 : basePrice) + shippingCharge;
+
     // Update product fields
-    product.name = name;
-    product.description = description;
-    product.shortDescription = shortDescription;
-    product.price = price;
-    product.comparePrice = comparePrice;
+    if (name !== undefined && name !== '') product.name = name;
+    if (description !== undefined && description !== '') product.description = description;
+    if (shortDescription !== undefined) product.shortDescription = shortDescription;
+    product.price = finalPrice;
+    if (comparePrice !== undefined && comparePrice !== '') product.comparePrice = comparePrice;
     product.images = imageUrl ? [{ url: imageUrl }] : product.images;
-    product.category = category;
-    product.subCategory = subCategory;
-    product.brand = brand;
-    product.sku = sku;
-    product.stock = stock;
-    product.lowStockThreshold = lowStockThreshold;
-    product.weight = weight;
-    product.dimensions = dimensions;
-    product.variants = variants;
-    product.specifications = specificationsArr;
-    product.features = featuresArr;
-    product.tags = tags;
-    product.shippingInfo = shippingInfo;
+    if (category && mongoose.Types.ObjectId.isValid(category)) product.category = category;
+    if (subCategory && mongoose.Types.ObjectId.isValid(subCategory)) product.subCategory = subCategory;
+    if (brand !== undefined && brand !== '') product.brand = brand;
+    if (sku !== undefined && sku !== '') product.sku = sku;
+    if (stock !== undefined && stock !== '') product.stock = stock;
+    if (lowStockThreshold !== undefined && lowStockThreshold !== '') product.lowStockThreshold = lowStockThreshold;
+    if (weight !== undefined && weight !== '') product.weight = weight;
+    if (weightUnit === 'kg' || weightUnit === 'g') product.weightUnit = weightUnit;
+    if (dimensions && typeof dimensions === 'object') product.dimensions = dimensions;
+    if (variants) product.variants = variants;
+    if (specificationsArr && specifications !== undefined) product.specifications = specificationsArr;
+    if (featuresArr && features !== undefined) product.features = featuresArr;
+    if (tags !== undefined) product.tags = tags;
+    // Merge previous shippingInfo safely
+    // Build a plain object to avoid carrying Mongoose doc internals and undefined fields
+    const baseShippingSrc = (typeof shippingInfo === 'object' && shippingInfo !== null)
+      ? shippingInfo
+      : (product.shippingInfo || {});
+    const mergedShippingPlain = JSON.parse(JSON.stringify(baseShippingSrc || {}));
+    if (mergedShippingPlain && typeof mergedShippingPlain.dimensions === 'undefined') {
+      delete mergedShippingPlain.dimensions;
+    }
+
+    product.shippingInfo = {
+      ...mergedShippingPlain,
+      weight: weightNum,
+      freeShipping: true,
+      shippingCost: shippingCharge
+    };
     product.seo = seo;
 
     await product.save();
@@ -431,9 +488,9 @@ exports.getStats = async (req, res) => {
     const Order = require('../models/Order');
     const orders = await Order.find({ seller: seller._id });
 
-    // Total sales (sum of totalPrice for delivered orders)
+    // Total sales (sum of totalPrice for all non-cancelled/refunded orders)
     const totalSales = orders
-      .filter(o => o.orderStatus === 'delivered')
+      .filter(o => o.orderStatus !== 'cancelled' && o.orderStatus !== 'refunded')
       .reduce((sum, o) => sum + (o.totalPrice || 0), 0);
 
     // Total orders (all orders for this seller)
@@ -456,3 +513,49 @@ exports.getStats = async (req, res) => {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 }; 
+
+// Wallet overview for seller
+exports.getWalletOverview = async (req, res) => {
+  try {
+    const seller = await Seller.findOne({ userId: req.user._id });
+    if (!seller) return res.status(404).json({ message: 'Seller not found' });
+
+    const Order = require('../models/Order');
+    const Withdrawal = require('../models/Withdrawal');
+
+    // Earnings rules:
+    // - Online: paymentStatus = 'paid'
+    // - COD: orderStatus = 'delivered'
+    const onlineEarningsAgg = await Order.aggregate([
+      { $match: { seller: seller._id, paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' } },
+      { $project: { sellerEarnEff: { $cond: [ { $gt: ['$sellerEarnings', 0] }, '$sellerEarnings', { $subtract: ['$itemsPrice', { $multiply: ['$itemsPrice', 0.07] }] } ] } } },
+      { $group: { _id: null, total: { $sum: '$sellerEarnEff' } } }
+    ]);
+    const codEarningsAgg = await Order.aggregate([
+      { $match: { seller: seller._id, paymentMethod: 'cod', orderStatus: 'delivered' } },
+      { $project: { sellerEarnEff: { $cond: [ { $gt: ['$sellerEarnings', 0] }, '$sellerEarnings', { $subtract: ['$itemsPrice', { $multiply: ['$itemsPrice', 0.07] }] } ] } } },
+      { $group: { _id: null, total: { $sum: '$sellerEarnEff' } } }
+    ]);
+    const totalEarnings = (onlineEarningsAgg[0]?.total || 0) + (codEarningsAgg[0]?.total || 0);
+
+    const processedWithdrawalsAgg = await Withdrawal.aggregate([
+      // NOTE: Withdrawal.seller references User, not Seller
+      { $match: { seller: seller.userId, $or: [ { status: 'paid' }, { status: 'processed' } ] } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const withdrawnAmount = processedWithdrawalsAgg[0]?.total || 0;
+
+    const availableBalance = Math.max(0, totalEarnings - withdrawnAmount);
+
+    // Sum of withdrawals not yet paid
+    const pendingAgg = await Withdrawal.aggregate([
+      { $match: { seller: seller.userId, status: { $in: ['pending', 'processing', 'approved'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const pendingAmount = pendingAgg[0]?.total || 0;
+
+    res.json({ availableBalance, totalEarnings, totalWithdrawn: withdrawnAmount, pendingWithdrawals: pendingAmount });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to compute wallet', error: error.message });
+  }
+};

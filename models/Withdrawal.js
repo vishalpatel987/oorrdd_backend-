@@ -13,7 +13,8 @@ const withdrawalSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'approved', 'rejected', 'processed'],
+    // Keep 'processed' for backward compatibility; new flow uses 'processing' and 'paid'
+    enum: ['pending', 'processing', 'approved', 'paid', 'rejected', 'processed'],
     default: 'pending',
   },
   paymentMethod: {

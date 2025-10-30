@@ -96,6 +96,11 @@ const variantOptionSchema = new mongoose.Schema({
     type: Number,
     min: 0
   },
+  weightUnit: {
+    type: String,
+    enum: ['kg', 'g'],
+    default: 'kg'
+  },
   dimensions: {
     length: Number,
     width: Number,

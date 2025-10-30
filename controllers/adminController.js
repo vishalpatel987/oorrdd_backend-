@@ -5,6 +5,7 @@ const { asyncHandler } = require('../middleware/errorMiddleware');
 // Get all sellers (with approval status)
 exports.getSellers = asyncHandler(async (req, res) => {
   const sellers = await Seller.find()
+    .sort({ createdAt: -1 })
     .populate('userId', 'name email')
     .populate('approvedBy', 'name email')
     .populate('rejectedBy', 'name email')
@@ -277,15 +278,33 @@ exports.getOrders = asyncHandler(async (req, res) => {
 
 // Get analytics/stats
 exports.getAnalytics = asyncHandler(async (req, res) => {
+  const pendingFilter = {
+    isApproved: false,
+    isSuspended: { $ne: true },
+    $or: [
+      { rejectionReason: { $exists: false } },
+      { rejectionReason: null },
+      { rejectionReason: '' }
+    ]
+  };
+
   const [totalUsers, totalProducts, totalOrders, totalVendors, pendingVendors, totalSales] = await Promise.all([
     User.countDocuments(),
     require('../models/Product').countDocuments(),
     require('../models/Order').countDocuments(),
     require('../models/Seller').countDocuments(),
-    require('../models/Seller').countDocuments({ isApproved: false }),
+    require('../models/Seller').countDocuments(pendingFilter),
+    // Sales amount should include only qualifying orders
     require('../models/Order').aggregate([
+      { $match: {
+        orderStatus: { $nin: ['cancelled', 'refunded'] },
+        $or: [
+          { paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' },
+          { paymentMethod: 'cod', orderStatus: 'delivered' }
+        ]
+      } },
       { $group: { _id: null, total: { $sum: '$totalPrice' } } }
-    ]).then(res => res[0]?.total || 0)
+    ]).then(r => r[0]?.total || 0)
   ]);
   res.json({
     totalUsers,
@@ -297,51 +316,264 @@ exports.getAnalytics = asyncHandler(async (req, res) => {
   });
 });
 
+// Sales report: group by day/month/year
+exports.getSalesReport = asyncHandler(async (req, res) => {
+  const { period = 'daily', from, to } = req.query;
+  const match = {
+    orderStatus: { $nin: ['cancelled', 'refunded'] },
+    $or: [
+      { paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' },
+      { paymentMethod: 'cod', orderStatus: 'delivered' }
+    ]
+  };
+  if (from || to) {
+    match.createdAt = {};
+    if (from) match.createdAt.$gte = new Date(from);
+    if (to) match.createdAt.$lte = new Date(to);
+  }
+  const proj = {
+    totalPrice: 1,
+    createdAt: 1
+  };
+  let groupId;
+  if (period === 'yearly') {
+    groupId = { $dateToString: { format: '%Y', date: '$createdAt' } };
+  } else if (period === 'monthly') {
+    groupId = { $dateToString: { format: '%Y-%m', date: '$createdAt' } };
+  } else {
+    groupId = { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } };
+  }
+  const data = await require('../models/Order').aggregate([
+    { $match: match },
+    { $project: proj },
+    { $group: { _id: groupId, revenue: { $sum: '$totalPrice' }, orders: { $sum: 1 } } },
+    { $sort: { _id: 1 } }
+  ]);
+  res.json({ period, data });
+});
+
+// Top products by quantity and revenue
+exports.getTopProducts = asyncHandler(async (req, res) => {
+  const limit = Number(req.query.limit || 10);
+  const data = await require('../models/Order').aggregate([
+    { $match: { orderStatus: { $nin: ['cancelled', 'refunded'] }, $or: [ { paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' }, { paymentMethod: 'cod', orderStatus: 'delivered' } ] } },
+    { $unwind: '$orderItems' },
+    { $group: {
+      _id: '$orderItems.product',
+      name: { $first: '$orderItems.name' },
+      quantity: { $sum: '$orderItems.quantity' },
+      revenue: { $sum: { $multiply: ['$orderItems.price', '$orderItems.quantity'] } }
+    } },
+    { $sort: { quantity: -1 } },
+    { $limit: limit }
+  ]);
+  res.json(data);
+});
+
+// Top vendors by revenue
+exports.getTopVendors = asyncHandler(async (req, res) => {
+  const limit = Number(req.query.limit || 10);
+  const period = req.query.period || null; // daily | monthly | yearly | null
+  const match = { 
+    orderStatus: { $nin: ['cancelled', 'refunded'] }, 
+    $or: [ 
+      { paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' }, 
+      { paymentMethod: 'cod', orderStatus: 'delivered' } 
+    ]
+  };
+  if (period) {
+    const now = new Date();
+    let from;
+    if (period === 'daily') {
+      from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    } else if (period === 'monthly') {
+      // last 30 days
+      from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    } else if (period === 'yearly') {
+      // last 365 days
+      from = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+    }
+    if (from) match.createdAt = { $gte: from };
+  }
+
+  const data = await require('../models/Order').aggregate([
+    { $match: match },
+    { $group: { _id: '$seller', orders: { $sum: 1 }, revenue: { $sum: '$totalPrice' } } },
+    { $sort: { revenue: -1 } },
+    { $limit: limit },
+    { $lookup: { from: 'sellers', localField: '_id', foreignField: '_id', as: 'seller' } },
+    { $unwind: { path: '$seller', preserveNullAndEmptyArrays: true } },
+    { $project: { _id: 1, orders: 1, revenue: 1, shopName: '$seller.shopName' } }
+  ]);
+  res.json(data);
+});
+
+// --- Admin Earnings (Commission) ---
+exports.getAdminEarningsSummary = asyncHandler(async (req, res) => {
+  const Order = require('../models/Order');
+  // Online commission (non-COD paid)
+  const onlineAgg = await Order.aggregate([
+    { $match: { paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' } },
+    { $project: { commEff: { $cond: [ { $gt: ['$commission', 0] }, '$commission', { $multiply: ['$itemsPrice', 0.07] } ] } } },
+    { $group: { _id: null, total: { $sum: '$commEff' }, orders: { $sum: 1 } } }
+  ]);
+  // COD delivered commission
+  const codAgg = await Order.aggregate([
+    { $match: { paymentMethod: 'cod', orderStatus: 'delivered' } },
+    { $project: { commEff: { $cond: [ { $gt: ['$commission', 0] }, '$commission', { $multiply: ['$itemsPrice', 0.07] } ] } } },
+    { $group: { _id: null, total: { $sum: '$commEff' }, orders: { $sum: 1 } } }
+  ]);
+
+  const onlineCommission = onlineAgg[0]?.total || 0;
+  const codCommission = codAgg[0]?.total || 0;
+  const totalOrders = (onlineAgg[0]?.orders || 0) + (codAgg[0]?.orders || 0);
+  const totalCommission = onlineCommission + codCommission;
+
+  res.json({
+    totalCommission,
+    onlineCommission,
+    codCommission,
+    totalOrders
+  });
+});
+
+exports.getAdminEarningsTrend = asyncHandler(async (req, res) => {
+  const Order = require('../models/Order');
+  const period = req.query.period || 'daily'; // daily | monthly | yearly
+  let format = '%Y-%m-%d';
+  if (period === 'monthly') format = '%Y-%m';
+  if (period === 'yearly') format = '%Y';
+
+  const data = await Order.aggregate([
+    { $match: {
+      $or: [
+        { paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' },
+        { paymentMethod: 'cod', orderStatus: 'delivered' }
+      ]
+    } },
+    { $project: {
+      createdAt: 1,
+      commEff: { $cond: [ { $gt: ['$commission', 0] }, '$commission', { $multiply: ['$itemsPrice', 0.07] } ] }
+    } },
+    { $group: { _id: { $dateToString: { format, date: '$createdAt' } }, amount: { $sum: '$commEff' } } },
+    { $sort: { _id: 1 } },
+    { $project: { _id: 0, date: '$_id', amount: 1 } }
+  ]);
+
+  res.json(data);
+});
+
 // Wallet Management Functions
 exports.getWalletOverview = asyncHandler(async (req, res) => {
-  const totalSellers = await Seller.countDocuments({ isApproved: true });
-  const totalWithdrawals = await require('../models/Withdrawal').countDocuments();
-  const pendingWithdrawals = await require('../models/Withdrawal').countDocuments({ status: 'pending' });
-  const processedWithdrawals = await require('../models/Withdrawal').countDocuments({ status: 'processed' });
-  
+  const Withdrawal = require('../models/Withdrawal');
+  const Order = require('../models/Order');
+  const UserModel = require('../models/User');
+
+  const [totalSellers, totalWithdrawals, pendingWithdrawals, processedWithdrawals] = await Promise.all([
+    Seller.countDocuments({ isApproved: true }),
+    Withdrawal.countDocuments(),
+    Withdrawal.countDocuments({ status: 'pending' }),
+    // Dashboard "Processed" card should exclude paid and rejected
+    Withdrawal.countDocuments({ $or: [ { status: 'processing' }, { status: 'processed' } ] })
+  ]);
+
+  // Platform commission balance (online paid + COD delivered)
+  const [onlineCommissionAgg, codCommissionAgg] = await Promise.all([
+    Order.aggregate([
+      { $match: { paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' } },
+      { $project: { commEff: { $cond: [ { $gt: ['$commission', 0] }, '$commission', { $multiply: ['$itemsPrice', 0.07] } ] } } },
+      { $group: { _id: null, total: { $sum: '$commEff' } } }
+    ]),
+    Order.aggregate([
+      { $match: { paymentMethod: 'cod', orderStatus: 'delivered' } },
+      { $project: { commEff: { $cond: [ { $gt: ['$commission', 0] }, '$commission', { $multiply: ['$itemsPrice', 0.07] } ] } } },
+      { $group: { _id: null, total: { $sum: '$commEff' } } }
+    ])
+  ]);
+
+  const platformOnlineCommission = onlineCommissionAgg[0]?.total || 0;
+  const platformCODCommission = codCommissionAgg[0]?.total || 0;
+  const platformCommissionBalance = platformOnlineCommission + platformCODCommission;
+
+  // Total seller wallets
+  const sellersUsers = await UserModel.aggregate([
+    { $match: { role: 'seller' } },
+    { $group: { _id: null, total: { $sum: '$walletBalance' } } }
+  ]);
+  const totalSellerWalletBalance = sellersUsers[0]?.total || 0;
+
   res.json({
     totalSellers,
     totalWithdrawals,
     pendingWithdrawals,
-    processedWithdrawals
+    processedWithdrawals,
+    platformOnlineCommission,
+    platformCODCommission,
+    platformCommissionBalance,
+    totalSellerWalletBalance
   });
 });
 
 exports.getSellerEarnings = asyncHandler(async (req, res) => {
   const sellers = await Seller.find({ isApproved: true }).populate('userId', 'name email');
-  
-  const sellerEarnings = await Promise.all(sellers.map(async (seller) => {
-    // Get seller's orders and calculate earnings
-    const orders = await require('../models/Order').find({ 
-      seller: seller._id,
-      orderStatus: 'Completed'
-    });
-    
-    const totalEarnings = orders.reduce((sum, order) => sum + (order.sellerEarnings || 0), 0);
-    const totalWithdrawals = await require('../models/Withdrawal').find({ 
-      seller: seller._id,
-      status: 'processed'
-    });
-    const withdrawnAmount = totalWithdrawals.reduce((sum, withdrawal) => sum + withdrawal.amount, 0);
-    const currentBalance = totalEarnings - withdrawnAmount;
-    
+  const Order = require('../models/Order');
+  const Withdrawal = require('../models/Withdrawal');
+
+  const sellerEarningsRaw = await Promise.all(sellers.map(async (seller) => {
+    const sellerUserId = seller.userId?._id ? seller.userId._id : seller.userId;
+    // Compute earnings only from completed/qualifying orders to avoid inflated values
+    const onlineOrders = await Order.find({ seller: seller._id, paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' });
+    const codDelivered = await Order.find({ seller: seller._id, paymentMethod: 'cod', orderStatus: 'delivered' });
+    const orders = [...onlineOrders, ...codDelivered];
+    const totalEarnings = orders.reduce((sum, o) => {
+      const base = (o.sellerEarnings && o.sellerEarnings > 0)
+        ? o.sellerEarnings
+        : (o.itemsPrice - (o.itemsPrice * 0.07));
+      return sum + Math.max(0, base || 0);
+    }, 0);
+
+    // Amount actually paid out to the seller
+    const paidAgg = await Withdrawal.aggregate([
+      { $match: { seller: sellerUserId, $or: [ { status: 'paid' }, { status: 'processed' } ] } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const withdrawnAmount = paidAgg[0]?.total || 0;
+
+    const currentBalance = Math.max(0, totalEarnings - withdrawnAmount);
+
+    // Only include sellers who have at least one withdrawal (any status)
+    const anyWithdrawal = await Withdrawal.countDocuments({ seller: sellerUserId }) > 0;
+    if (!anyWithdrawal) return null;
+
     return {
       _id: seller._id,
       shopName: seller.shopName,
-      email: seller.userId.email,
+      email: seller.userId?.email || seller.email || '',
       isApproved: seller.isApproved,
       totalEarnings,
       withdrawnAmount,
       currentBalance
     };
   }));
-  
+
+  const sellerEarnings = sellerEarningsRaw.filter(Boolean);
+
   res.json(sellerEarnings);
+});
+
+// List cancellation requests for admin review
+exports.getCancellationRequests = asyncHandler(async (req, res) => {
+  const Order = require('../models/Order');
+  const orders = await Order.find({
+    $or: [
+      { cancellationRequested: true },
+      { refundStatus: 'pending' }
+    ]
+  })
+    .populate('user', 'name email')
+    .populate('seller', 'shopName');
+
+  res.json(orders);
 });
 
 exports.getWithdrawalRequests = asyncHandler(async (req, res) => {
