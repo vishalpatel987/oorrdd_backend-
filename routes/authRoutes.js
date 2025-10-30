@@ -1,10 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { register, login, getMe, verifyEmail, requestPasswordResetOTP, verifyPasswordResetOTP, resetPasswordWithOTP } = require('../controllers/authController');
+const { register, startRegistrationWithOTP, verifyRegistrationOTP, login, getMe, verifyEmail, requestPasswordResetOTP, verifyPasswordResetOTP, resetPasswordWithOTP } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 
 // Public routes
 router.post('/register', register);
+// Registration with email OTP
+router.post('/register/start', startRegistrationWithOTP);
+router.post('/register/verify', verifyRegistrationOTP);
 router.post('/login', login);
 router.get('/verify-email/:token', verifyEmail);
 // OTP-based password reset routes

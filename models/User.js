@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto'); // ✅ ye line add karo (tumhare original code me missing thi)
 
 const userSchema = new mongoose.Schema({
   name: {
@@ -86,9 +87,29 @@ const userSchema = new mongoose.Schema({
     default: false
   },
   emailVerificationToken: String,
+  // Registration email verification via OTP
+  emailVerificationOTP: String,          // hashed OTP
+  emailVerificationOTPExpire: Date,      // expiry timestamp
+  emailVerificationOTPAttempts: {        // attempt counter for rate limiting
+    type: Number,
+    default: 0
+  },
   emailVerificationExpire: Date,
   resetPasswordToken: String,
   resetPasswordExpire: Date,
+
+  // ✅ ✅ OTP-based password reset fields
+  resetPasswordOTP: String,             // Hashed OTP stored here
+  resetPasswordOTPExpire: Date,         // Expiry time for OTP
+  resetPasswordOTPVerified: {           // Whether OTP verified
+    type: Boolean,
+    default: false
+  },
+  resetPasswordOTPAttempts: {           // For brute-force protection
+    type: Number,
+    default: 0
+  },
+
   isActive: {
     type: Boolean,
     default: true
@@ -103,22 +124,20 @@ userSchema.index({ email: 1 });
 userSchema.index({ role: 1 });
 
 // Encrypt password before saving
-userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) {
-    next();
-  }
-  
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
 });
 
 // Match user entered password to hashed password in database
-userSchema.methods.matchPassword = async function(enteredPassword) {
+userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
-// Generate and hash password token
-userSchema.methods.getResetPasswordToken = function() {
+// Generate and hash password token (old link-based method)
+userSchema.methods.getResetPasswordToken = function () {
   // Generate token
   const resetToken = crypto.randomBytes(20).toString('hex');
 
@@ -134,4 +153,4 @@ userSchema.methods.getResetPasswordToken = function() {
   return resetToken;
 };
 
-module.exports = mongoose.model('User', userSchema); 
+module.exports = mongoose.model('User', userSchema);

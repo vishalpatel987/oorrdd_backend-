@@ -4,14 +4,19 @@ const sendEmail = require('../utils/sendEmail');
 const crypto = require('crypto');
 const { asyncHandler } = require('../middleware/errorMiddleware');
 
-// @desc    Register user
+// @desc    Register user (legacy immediate signup)
 // @route   POST /api/auth/register
 // @access  Public
 const register = asyncHandler(async (req, res) => {
   const { name, email, password, role = 'customer' } = req.body;
 
+  const normalizedEmail = normalizeEmail(email);
+  if (!name || !normalizedEmail || !password) {
+    return res.status(400).json({ message: 'Name, email and password are required' });
+  }
+
   // Check if user exists
-  const userExists = await User.findOne({ email });
+  const userExists = await User.findOne({ email: normalizedEmail });
   if (userExists) {
     return res.status(400).json({ message: 'User already exists' });
   }
@@ -19,7 +24,7 @@ const register = asyncHandler(async (req, res) => {
   // Create user
   const user = await User.create({
     name,
-    email,
+    email: normalizedEmail,
     password,
     role
   });
@@ -37,6 +42,105 @@ const register = asyncHandler(async (req, res) => {
   } else {
     res.status(400).json({ message: 'Invalid user data' });
   }
+});
+
+// -------- Registration with Email OTP verification --------
+// @desc    Start registration: create account (unverified) and email OTP
+// @route   POST /api/auth/register/start
+// @access  Public
+const startRegistrationWithOTP = asyncHandler(async (req, res) => {
+  const { name, email, password, role = 'customer' } = req.body;
+  const normalizedEmail = normalizeEmail(email);
+  if (!name || !normalizedEmail || !password) {
+    return res.status(400).json({ message: 'Name, email and password are required' });
+  }
+
+  let user = await User.findOne({ email: normalizedEmail }).select('+password');
+  if (user && user.isEmailVerified) {
+    return res.status(400).json({ message: 'User already exists' });
+  }
+
+  // Create or update an unverified user record
+  if (!user) {
+    user = await User.create({ name, email: normalizedEmail, password, role, isEmailVerified: false });
+  } else {
+    // keep latest provided details and reset password if provided
+    user.name = name;
+    user.password = password;
+    user.role = role;
+    user.isEmailVerified = false;
+  }
+
+  const otp = generateSixDigitOTP();
+  const hashed = hashValueSha256(otp);
+  user.emailVerificationOTP = hashed;
+  user.emailVerificationOTPExpire = new Date(Date.now() + 10 * 60 * 1000);
+  user.emailVerificationOTPAttempts = 0;
+  await user.save();
+
+  const subject = 'Verify your email - MV Store';
+  const html = `<p>Hi ${name || ''},</p>
+    <p>Your verification code is:</p>
+    <h2 style="letter-spacing:4px">${otp}</h2>
+    <p>This code will expire in 10 minutes.</p>`;
+
+  try {
+    await sendEmail({ email: normalizedEmail, subject, message: `Your OTP is ${otp}`, html });
+    return res.status(200).json({ message: 'OTP sent to email', email: normalizedEmail });
+  } catch (err) {
+    user.emailVerificationOTP = undefined;
+    user.emailVerificationOTPExpire = undefined;
+    user.emailVerificationOTPAttempts = 0;
+    await user.save();
+    return res.status(500).json({ message: 'Failed to send OTP email' });
+  }
+});
+
+// @desc    Verify registration OTP and finalize account
+// @route   POST /api/auth/register/verify
+// @access  Public
+const verifyRegistrationOTP = asyncHandler(async (req, res) => {
+  const { email, otp } = req.body;
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !otp) {
+    return res.status(400).json({ message: 'Email and OTP are required' });
+  }
+
+  const user = await User.findOne({ email: normalizedEmail }).select('+password');
+  if (!user) return res.status(404).json({ message: 'User not found' });
+  if (user.isEmailVerified) {
+    return res.status(200).json({
+      token: generateToken(user._id),
+      user: { _id: user._id, name: user.name, email: user.email, role: user.role }
+    });
+  }
+
+  if (!user.emailVerificationOTP || !user.emailVerificationOTPExpire) {
+    return res.status(400).json({ message: 'No OTP requested' });
+  }
+  if ((user.emailVerificationOTPAttempts || 0) >= 5) {
+    return res.status(429).json({ message: 'Too many attempts. Please request a new OTP.' });
+  }
+  if (Date.now() > new Date(user.emailVerificationOTPExpire).getTime()) {
+    return res.status(400).json({ message: 'OTP expired' });
+  }
+  const hashed = hashValueSha256(otp);
+  if (hashed !== user.emailVerificationOTP) {
+    user.emailVerificationOTPAttempts = (user.emailVerificationOTPAttempts || 0) + 1;
+    await user.save();
+    return res.status(400).json({ message: 'Invalid OTP' });
+  }
+
+  user.isEmailVerified = true;
+  user.emailVerificationOTP = undefined;
+  user.emailVerificationOTPExpire = undefined;
+  user.emailVerificationOTPAttempts = 0;
+  await user.save();
+
+  return res.status(200).json({
+    token: generateToken(user._id),
+    user: { _id: user._id, name: user.name, email: user.email, role: user.role }
+  });
 });
 
 // @desc    Login user
@@ -57,6 +161,9 @@ const login = asyncHandler(async (req, res) => {
   }
 
   if (user && (await user.matchPassword(password))) {
+    if (!user.isEmailVerified) {
+      return res.status(403).json({ message: 'Please verify your email to continue. Check your inbox for the OTP.' });
+    }
     res.json({
       token: generateToken(user._id),
       user: {
@@ -241,6 +348,8 @@ const verifyEmail = asyncHandler(async (req, res) => {
 
 module.exports = {
   register,
+  startRegistrationWithOTP,
+  verifyRegistrationOTP,
   login,
   getMe,
   verifyEmail,
