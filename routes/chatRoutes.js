@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
+const mongoose = require('mongoose');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const User = require('../models/User');
@@ -32,6 +33,14 @@ const upload = multer({
     }
   }
 });
+
+// Safe caster to ObjectId
+function toObjectId(id) {
+  if (!id) return null;
+  const str = String(id);
+  if (mongoose.isValidObjectId(str)) return new mongoose.Types.ObjectId(str);
+  return null;
+}
 
 // Upload file for chat
 router.post('/upload', protect, upload.single('file'), async (req, res) => {
@@ -75,15 +84,17 @@ router.get('/users', protect, async (req, res) => {
 // Get all conversations for logged-in user
 router.get('/conversations', protect, async (req, res) => {
   try {
-    const conversations = await Conversation.find({ participants: req.user._id }).populate('participants', 'name email role');
+    const selfId = toObjectId(req.user._id);
+    if (!selfId) return res.status(400).json({ message: 'Invalid user id' });
+    const conversations = await Conversation.find({ participants: { $in: [selfId] } }).populate('participants', 'name email role');
     // For each conversation, count unread messages for this user and get last message
     const unreadCounts = {};
     const lastMessages = {};
     for (const conv of conversations) {
       const count = await Message.countDocuments({
         conversation: conv._id,
-        readBy: { $ne: req.user._id },
-        sender: { $ne: req.user._id }
+        readBy: { $ne: selfId },
+        sender: { $ne: selfId }
       });
       unreadCounts[conv._id] = count;
       // Get last message
@@ -105,11 +116,13 @@ router.get('/conversations', protect, async (req, res) => {
 // Get messages for a conversation and mark as read
 router.get('/messages/:conversationId', protect, async (req, res) => {
   try {
+    const selfId = toObjectId(req.user._id);
+    if (!selfId) return res.status(400).json({ message: 'Invalid user id' });
     const messages = await Message.find({ conversation: req.params.conversationId }).populate('sender', 'name email');
     // Mark all messages as read by this user
     await Message.updateMany(
-      { conversation: req.params.conversationId, readBy: { $ne: req.user._id } },
-      { $addToSet: { readBy: req.user._id } }
+      { conversation: req.params.conversationId, readBy: { $ne: selfId } },
+      { $addToSet: { readBy: selfId } }
     );
     res.json(messages);
   } catch (err) {
@@ -122,11 +135,16 @@ router.post('/conversations', protect, async (req, res) => {
   try {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ message: 'userId is required' });
-    let conversation = await Conversation.findOne({ participants: { $all: [req.user._id, userId] } });
+    const selfId = toObjectId(req.user._id);
+    const otherId = toObjectId(userId);
+    if (!selfId || !otherId) return res.status(400).json({ message: 'Invalid ids' });
+    let conversation = await Conversation.findOne({ participants: { $all: [selfId, otherId] } });
     if (!conversation) {
-      conversation = await Conversation.create({ participants: [req.user._id, userId] });
+      conversation = await Conversation.create({ participants: [selfId, otherId] });
     }
-    res.json(conversation);
+    // Populate participants so the frontend always has seller/customer names immediately
+    const populated = await Conversation.findById(conversation._id).populate('participants', 'name email role');
+    res.json(populated);
   } catch (err) {
     res.status(500).json({ message: 'Failed to start conversation', error: err.message });
   }
@@ -137,9 +155,11 @@ router.post('/messages', protect, async (req, res) => {
   try {
     const { conversationId, text } = req.body;
     if (!conversationId) return res.status(400).json({ message: 'conversationId is required' });
+    const selfId = toObjectId(req.user._id);
+    if (!selfId) return res.status(400).json({ message: 'Invalid user id' });
     const message = await Message.create({
       conversation: conversationId,
-      sender: req.user._id,
+      sender: selfId,
       text,
       delivered: true
     });

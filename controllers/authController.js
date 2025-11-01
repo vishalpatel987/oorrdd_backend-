@@ -162,7 +162,17 @@ const login = asyncHandler(async (req, res) => {
 
   if (user && (await user.matchPassword(password))) {
     if (!user.isEmailVerified) {
-      return res.status(403).json({ message: 'Please verify your email to continue. Check your inbox for the OTP.' });
+      // Allow legacy accounts (created before OTP enforcement) to log in without email verification
+      const enforceFrom = process.env.OTP_ENFORCE_FROM || '2025-10-30T00:00:00.000Z';
+      const isLegacy = user.createdAt && new Date(user.createdAt).getTime() < new Date(enforceFrom).getTime();
+
+      if (isLegacy) {
+        // Mark verified once to avoid future prompts
+        user.isEmailVerified = true;
+        try { await user.save(); } catch (e) {}
+      } else {
+        return res.status(403).json({ message: 'Please verify your email to continue. Check your inbox for the OTP.' });
+      }
     }
     res.json({
       token: generateToken(user._id),
@@ -346,6 +356,64 @@ const verifyEmail = asyncHandler(async (req, res) => {
   res.json({ message: 'Email verified successfully' });
 });
 
+// -------- Legacy link-based forgot password (re-enabled) --------
+// @desc    Send password reset link to email
+// @route   POST /api/auth/forgot-password
+// @access  Public
+const forgotPassword = asyncHandler(async (req, res) => {
+  const { email: rawEmail } = req.body;
+  const email = normalizeEmail(rawEmail);
+  if (!email) return res.status(400).json({ message: 'Email is required' });
+
+  const user = await User.findOne({ email });
+  if (!user) return res.status(404).json({ message: 'User not found' });
+
+  const resetToken = user.getResetPasswordToken();
+  await user.save({ validateBeforeSave: false });
+
+  const clientBase = process.env.CLIENT_URL || req.get('origin') || 'http://localhost:3000';
+  const resetUrl = `${clientBase}/reset-password/${resetToken}`;
+  const subject = 'Reset your password - MV Store';
+  const html = `<p>Hi ${user.name || ''},</p>
+    <p>You requested to reset your password. Click the link below:</p>
+    <p><a href="${resetUrl}">Reset Password</a></p>
+    <p>This link will expire in 10 minutes. If you did not request this, please ignore this email.</p>`;
+
+  try {
+    await sendEmail({ email: user.email, subject, message: `Reset your password: ${resetUrl}`, html });
+    return res.json({ message: 'Password reset link sent to your email' });
+  } catch (err) {
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    await user.save({ validateBeforeSave: false });
+    return res.status(500).json({ message: 'Email could not be sent' });
+  }
+});
+
+// @desc    Reset password using link token
+// @route   PUT /api/auth/reset-password/:token
+// @access  Public
+const resetPassword = asyncHandler(async (req, res) => {
+  const { token } = req.params;
+  const { password } = req.body;
+  if (!password) return res.status(400).json({ message: 'Password is required' });
+
+  const resetPasswordToken = crypto.createHash('sha256').update(token).digest('hex');
+  const user = await User.findOne({
+    resetPasswordToken,
+    resetPasswordExpire: { $gt: Date.now() }
+  }).select('+password');
+
+  if (!user) return res.status(400).json({ message: 'Invalid or expired token' });
+
+  user.password = password;
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpire = undefined;
+  await user.save();
+
+  return res.json({ message: 'Password reset successful' });
+});
+
 module.exports = {
   register,
   startRegistrationWithOTP,
@@ -355,5 +423,8 @@ module.exports = {
   verifyEmail,
   requestPasswordResetOTP,
   verifyPasswordResetOTP,
-  resetPasswordWithOTP
+  resetPasswordWithOTP,
+  // newly re-enabled link flow
+  forgotPassword,
+  resetPassword
 }; 

@@ -276,6 +276,45 @@ exports.getOrders = asyncHandler(async (req, res) => {
   res.json(orders);
 });
 
+// List shipments with filters for admin
+exports.getShipments = asyncHandler(async (req, res) => {
+  const Order = require('../models/Order');
+  const { status, search } = req.query; // status: processing|shipped|delivered|rto|cancelled|all
+
+  const query = { 'shipment.shipmentId': { $exists: true, $ne: null } };
+  if (status && status !== 'all') {
+    if (status === 'rto') {
+      query.$or = [ { 'shipment.isReturning': true }, { 'shipment.events.type': /rto/i } ];
+    } else if (status === 'processing') {
+      query.orderStatus = 'processing';
+    } else if (status === 'shipped') {
+      query.orderStatus = 'shipped';
+    } else if (status === 'delivered') {
+      query.orderStatus = 'delivered';
+    } else if (status === 'cancelled') {
+      query.orderStatus = 'cancelled';
+    }
+  }
+
+  const orders = await Order.find(query)
+    .populate('user', 'name email')
+    .populate('seller', 'shopName')
+    .sort({ createdAt: -1 });
+
+  let results = orders;
+  if (search) {
+    const s = String(search).toLowerCase();
+    results = orders.filter(o => (
+      (o.orderNumber || '').toLowerCase().includes(s) ||
+      (o.shipment?.awb || '').toLowerCase().includes(s) ||
+      (o.user?.email || '').toLowerCase().includes(s) ||
+      (o.seller?.shopName || '').toLowerCase().includes(s)
+    ));
+  }
+
+  res.json(results);
+});
+
 // Get analytics/stats
 exports.getAnalytics = asyncHandler(async (req, res) => {
   const pendingFilter = {
@@ -557,7 +596,7 @@ exports.getSellerEarnings = asyncHandler(async (req, res) => {
   }));
 
   const sellerEarnings = sellerEarningsRaw.filter(Boolean);
-
+  
   res.json(sellerEarnings);
 });
 

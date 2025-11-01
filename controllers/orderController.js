@@ -4,6 +4,8 @@ const Seller = require('../models/Seller');
 const User = require('../models/User');
 const { asyncHandler } = require('../middleware/errorMiddleware');
 const { verifyPayment, getPaymentDetails } = require('../utils/razorpay');
+const rapidShyp = require('../services/rapidshypService');
+const Coupon = require('../models/Coupon');
 
 // Create Order: Splits cart by seller, creates separate orders for each seller
 exports.createOrder = asyncHandler(async (req, res) => {
@@ -92,6 +94,27 @@ exports.createOrder = asyncHandler(async (req, res) => {
 
     // COD: do NOT credit wallet immediately; credit after delivery in updateOrderStatus
   }
+  // Mark coupon as used by this user (once per checkout)
+  if (coupon) {
+    try {
+      const normalized = String(coupon).trim().toUpperCase();
+      const c = await Coupon.findOneAndUpdate(
+        { code: normalized, isActive: true },
+        { $addToSet: { usedBy: userId } },
+        { new: true }
+      );
+      if (c && c.usageLimit && c.usedBy && c.usedBy.length >= c.usageLimit) {
+        c.isActive = false;
+        await c.save();
+      }
+    } catch (e) {
+      // Non-blocking
+    }
+  }
+  // Clear user's cart after successful order creation
+  try {
+    await User.findByIdAndUpdate(userId, { $set: { cart: [] } });
+  } catch (e) {}
   res.status(201).json({ orders: createdOrders });
 });
 
@@ -239,8 +262,9 @@ exports.createOrderWithPayment = asyncHandler(async (req, res) => {
         totalPrice,
         commission,
         sellerEarnings,
-        orderStatus: 'confirmed', // Payment successful, so order is confirmed
+        orderStatus: 'confirmed',
         paymentStatus: 'paid',
+        sellerCredited: false,
         shippingStatus: 'pending',
         coupon: coupon || undefined,
         discount: discount || 0,
@@ -252,16 +276,31 @@ exports.createOrderWithPayment = asyncHandler(async (req, res) => {
       await order.save();
       createdOrders.push(order);
 
-      // Add commission to seller's wallet balance
-      const sellerDocForUser = await Seller.findById(sellerId).select('userId');
-      if (sellerDocForUser?.userId) {
-        await User.findByIdAndUpdate(
-          sellerDocForUser.userId,
-          { $inc: { walletBalance: sellerEarnings } }
+      // Do NOT credit seller immediately; credit on delivery webhook to align with policy
+    }
+
+    // After all orders created successfully, mark coupon as used
+    if (coupon) {
+      try {
+        const normalized = String(coupon).trim().toUpperCase();
+        const c = await Coupon.findOneAndUpdate(
+          { code: normalized, isActive: true },
+          { $addToSet: { usedBy: userId } },
+          { new: true }
         );
+        if (c && c.usageLimit && c.usedBy && c.usedBy.length >= c.usageLimit) {
+          c.isActive = false;
+          await c.save();
+        }
+      } catch (e) {
+        // ignore coupon update errors
       }
     }
 
+    // Clear user's cart after successful order creation with payment
+    try {
+      await User.findByIdAndUpdate(userId, { $set: { cart: [] } });
+    } catch (e) {}
     res.status(201).json({ 
       success: true,
       data: {
@@ -348,12 +387,109 @@ exports.updateOrderStatus = asyncHandler(async (req, res) => {
 
 // Cancel order
 exports.cancelOrder = asyncHandler(async (req, res) => {
-  const order = await Order.findById(req.params.id);
+  const order = await Order.findById(req.params.id).populate('user', 'name email phone').populate('seller');
   if (!order) return res.status(404).json({ message: 'Order not found', route: req.originalUrl || req.url });
+  
+  const previousStatus = order.orderStatus;
   order.orderStatus = 'cancelled';
   order.cancelledAt = new Date();
   order.cancellationReason = req.body.reason || '';
   order.cancelledBy = req.user._id;
+
+  // Handle RTO (Return to Origin) if shipment exists
+  if (order.shipment?.shipmentId && order.shipment.status !== 'cancelled' && order.shipment.status !== 'returned') {
+    // Mark shipment as returning (RTO)
+    order.shipment.isReturning = true;
+    order.shipment.status = 'rto';
+
+    // Create RTO shipment via RapidShyp if order was shipped
+    if (order.shippingStatus === 'shipped' && previousStatus === 'processing') {
+      try {
+        const seller = await Seller.findById(order.seller);
+        if (seller) {
+          // Prepare pickup address (customer's address - where to pick up from)
+          const pickupAddress = {
+            name: `${order.user?.name || ''}`,
+            phone: order.shippingAddress?.phone || order.user?.phone || '',
+            address: order.shippingAddress?.street || '',
+            pincode: order.shippingAddress?.zipCode || '',
+            city: order.shippingAddress?.city || '',
+            state: order.shippingAddress?.state || '',
+            country: order.shippingAddress?.country || 'India',
+            email: order.user?.email || ''
+          };
+
+          // Prepare return address (seller's address - where to return to)
+          const returnAddress = {
+            name: seller.shopName,
+            phone: seller.phone,
+            address: seller.address?.street || '',
+            pincode: seller.address?.zipCode || '',
+            city: seller.address?.city || '',
+            state: seller.address?.state || '',
+            country: seller.address?.country || 'India',
+            email: seller.email || ''
+          };
+
+          // Calculate weight (approximate: 500g per item)
+          const weight = order.orderItems.reduce((sum, item) => sum + (item.quantity * 0.5), 0.5);
+
+          // Create RTO shipment via RapidShyp
+          const rtoResult = await rapidShyp.createRTO({
+            orderId: order.orderNumber || order._id.toString(),
+            originalAwb: order.shipment.awb,
+            pickupAddress,
+            returnAddress,
+            weight,
+            reason: `Order cancelled - ${order.cancellationReason || 'Customer refused delivery'}`
+          });
+
+          if (rtoResult.success) {
+            // Update order shipment with RTO details
+            order.shipment.events = order.shipment.events || [];
+            order.shipment.events.push({
+              type: 'rto_created',
+              at: new Date(),
+              raw: rtoResult.data
+            });
+
+            // Store RTO shipment details in order if available
+            if (rtoResult.data) {
+              const responseData = rtoResult.data;
+              
+              // Handle different response structures
+              if (responseData.shipment && Array.isArray(responseData.shipment) && responseData.shipment.length > 0) {
+                const rtoShipment = responseData.shipment[0];
+                order.shipment.rtoShipmentId = rtoShipment.shipmentId || rtoShipment.shipment_id;
+                order.shipment.rtoAwb = rtoShipment.awb || '';
+                if (rtoShipment.awb) {
+                  order.trackingUrl = rtoShipment.labelURL || rtoShipment.label_url || `https://track.rapidshyp.com/?awb=${rtoShipment.awb}`;
+                  order.shipment.trackingUrl = order.trackingUrl;
+                }
+              } else if (responseData.awb || responseData.shipment_id || responseData.shipmentId) {
+                order.shipment.rtoShipmentId = responseData.shipmentId || responseData.shipment_id || responseData.orderId || responseData.order_id;
+                order.shipment.rtoAwb = responseData.awb || '';
+                if (responseData.awb) {
+                  order.trackingUrl = responseData.labelURL || responseData.label_url || `https://track.rapidshyp.com/?awb=${responseData.awb}`;
+                  order.shipment.trackingUrl = order.trackingUrl;
+                }
+              }
+            }
+
+            console.log(`RTO shipment created for order ${order._id}`);
+          } else {
+            console.warn(`RTO shipment creation had issues for order ${order._id}:`, rtoResult.error || rtoResult.data?.message);
+            // Order is still cancelled, RTO might be handled automatically by RapidShyp
+            // or may need manual handling
+          }
+        }
+      } catch (rtoError) {
+        console.error('Error creating RTO shipment via RapidShyp:', rtoError);
+        // Don't fail order cancellation if RTO creation fails
+      }
+    }
+  }
+
   await order.save();
   res.json(order);
 }); 

@@ -30,6 +30,9 @@ SMTP_PORT=587
 SMTP_EMAIL=your_email@gmail.com
 SMTP_PASSWORD=your_app_password
 
+# Admin Email (where contact form notifications will be sent)
+ADMIN_EMAIL=admin@mvstore.com
+
 # Razorpay Configuration (for online payments and payouts)
 RAZORPAY_KEY_ID=your_razorpay_key_id
 RAZORPAY_KEY_SECRET=your_razorpay_key_secret
@@ -47,6 +50,11 @@ OPENAI_API_KEY=your_openai_api_key
 
 # Google Generative AI
 GOOGLE_GENERATIVE_AI_API_KEY=your_google_generative_ai_api_key
+
+# RapidShyp Configuration (for shipping and delivery)
+RAPIDSHYP_BASE_URL=https://api.rapidshyp.com/rapidshyp/apis/v1
+RAPIDSHYP_API_KEY=your_rapidshyp_api_key
+RAPIDSHYP_CLIENT_ID=your_rapidshyp_client_id
 ```
 
 ## Razorpay Setup Instructions:
@@ -65,6 +73,20 @@ GOOGLE_GENERATIVE_AI_API_KEY=your_google_generative_ai_api_key
 3. Get your Account Number from the dashboard
 4. Add it to your `.env` file as `RAZORPAY_ACCOUNT_NUMBER`
 5. Complete KYC if required for payouts
+
+## RapidShyp Setup Instructions:
+1. Go to [RapidShyp Dashboard](https://rapidshyp.com/)
+2. Create an account or login
+3. Navigate to Settings > API > Configure
+4. Or go to: Home > Settings > Api Configuration > Generate New Api Key
+5. Generate your API Key with appropriate scope (Read & Write recommended)
+6. Optionally configure Whitelist IP addresses (up to 5 IPs)
+7. Copy the generated API Key
+8. Add it to your `.env` file as `RAPIDSHYP_API_KEY`
+9. Configure webhook URL in RapidShyp dashboard: `https://your-domain.com/api/webhooks/rapidshyp`
+10. RapidShyp will automatically update order tracking status via webhooks
+
+**Note:** The `RAPIDSHYP_CLIENT_ID` is optional and may not be required depending on your RapidShyp plan.
 
 ## Important Notes:
 - Use test keys for development

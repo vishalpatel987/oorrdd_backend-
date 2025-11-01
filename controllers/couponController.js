@@ -6,10 +6,10 @@ const { asyncHandler } = require('../middleware/errorMiddleware');
 exports.createCoupon = asyncHandler(async (req, res) => {
   const { code, discount, expiry, usageLimit } = req.body;
   const coupon = new Coupon({
-    code,
+    code: String(code || '').trim().toUpperCase(),
     discount,
     vendor: req.user._id,
-    expiry,
+    expiry: expiry ? new Date(expiry) : new Date(Date.now() + 7*24*60*60*1000),
     usageLimit
   });
   await coupon.save();
@@ -25,7 +25,8 @@ exports.getCoupons = asyncHandler(async (req, res) => {
 // User: Apply a coupon code
 exports.applyCoupon = asyncHandler(async (req, res) => {
   const { code } = req.body;
-  const coupon = await Coupon.findOne({ code: code.toUpperCase(), isActive: true });
+  const normalized = String(code || '').trim().toUpperCase();
+  const coupon = await Coupon.findOne({ code: normalized, isActive: true });
   if (!coupon) {
     return res.status(404).json({ message: 'Invalid or expired coupon', route: req.originalUrl || req.url });
   }
@@ -37,6 +38,20 @@ exports.applyCoupon = asyncHandler(async (req, res) => {
   }
   if (coupon.usedBy.includes(req.user._id)) {
     return res.status(400).json({ message: 'You have already used this coupon', route: req.originalUrl || req.url });
+  }
+  // Mark coupon as used by this user immediately on apply to reflect in vendor dashboard
+  try {
+    const updated = await Coupon.findOneAndUpdate(
+      { _id: coupon._id, isActive: true },
+      { $addToSet: { usedBy: req.user._id } },
+      { new: true }
+    );
+    if (updated && updated.usageLimit && updated.usedBy && updated.usedBy.length >= updated.usageLimit) {
+      updated.isActive = false;
+      await updated.save();
+    }
+  } catch (e) {
+    // Non-blocking; coupon still applied for this session
   }
   res.json({ discount: coupon.discount, couponId: coupon._id });
 });

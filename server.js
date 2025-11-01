@@ -11,8 +11,22 @@ const User = require('./models/User');
 const Message = require('./models/Message');
 const Conversation = require('./models/Conversation');
 
-// Load environment variables
-dotenv.config();
+// Load environment variables - explicitly from backend/.env
+dotenv.config({ path: path.join(__dirname, '.env') });
+
+// Debug: Log ADMIN_EMAIL after loading (only in development)
+if (process.env.NODE_ENV !== 'production') {
+  console.log('');
+  console.log('========================================');
+  console.log('🔍 ENVIRONMENT VARIABLES DEBUG');
+  console.log('========================================');
+  console.log('ADMIN_EMAIL:', process.env.ADMIN_EMAIL || '❌ NOT SET');
+  console.log('SMTP_EMAIL:', process.env.SMTP_EMAIL || 'NOT SET');
+  console.log('SMTP_HOST:', process.env.SMTP_HOST || 'NOT SET');
+  console.log('EMAIL_FROM:', process.env.EMAIL_FROM || 'NOT SET');
+  console.log('========================================');
+  console.log('');
+}
 
 // Import routes
 const authRoutes = require('./routes/authRoutes');
@@ -27,6 +41,9 @@ const chatRoutes = require('./routes/chatRoutes');
 const couponRoutes = require('./routes/couponRoutes');
 const translateRoutes = require('./routes/translateRoutes');
 const withdrawalRoutes = require('./routes/withdrawalRoutes');
+const shippingRoutes = require('./routes/shippingRoutes');
+const returnRoutes = require('./routes/returnRoutes');
+const contactRoutes = require('./routes/contactRoutes');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorMiddleware');
@@ -134,6 +151,13 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/coupons', couponRoutes);
 app.use('/api/translate', translateRoutes);
 app.use('/api/withdrawals', withdrawalRoutes);
+app.use('/api/shipping', shippingRoutes);
+app.use('/api/returns', returnRoutes);
+app.use('/api/contact', contactRoutes);
+
+// RapidShyp webhook (must be before error handler and should accept raw body)
+const shippingController = require('./controllers/shippingController');
+app.post('/api/webhooks/rapidshyp', express.json({ type: '*/*' }), shippingController.webhook);
 
 // Test route to verify server is working
 app.get('/api/test', (req, res) => {

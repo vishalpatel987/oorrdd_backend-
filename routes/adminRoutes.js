@@ -27,6 +27,7 @@ router.put('/products/:id/reject', adminController.rejectProduct);
 router.post('/products/bulk-approve', adminController.bulkApproveProducts);
 router.post('/products/bulk-reject', adminController.bulkRejectProducts);
 router.get('/orders', adminController.getOrders);
+router.get('/shipments', adminController.getShipments);
 router.get('/analytics', adminController.getAnalytics);
 router.get('/orders/cancellation-requests', adminController.getCancellationRequests);
 router.put('/orders/:id/approve-cancel', orderController.adminApproveCancellation);

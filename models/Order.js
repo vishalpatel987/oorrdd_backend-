@@ -123,6 +123,8 @@ const orderSchema = new mongoose.Schema({
     enum: ['pending', 'shipped', 'delivered'],
     default: 'pending'
   },
+  // Whether admin has credited seller wallet for this order
+  sellerCredited: { type: Boolean, default: false },
   trackingNumber: String,
   trackingUrl: String,
   estimatedDelivery: Date,
@@ -153,6 +155,40 @@ const orderSchema = new mongoose.Schema({
   sellerEarnings: {
     type: Number,
     default: 0
+  },
+  // Shipment details
+  shipment: {
+    courier: String,
+    serviceName: String,
+    awb: String,
+    shipmentId: String,
+    trackingUrl: String,
+    labelUrl: String,
+    manifestUrl: String,
+    pickupId: String,
+    codAmount: Number,
+    courierCost: { type: Number, default: 0 },
+    status: { type: String, default: 'created' },
+    statusDescription: String,
+    isReturning: { type: Boolean, default: false },
+    appliedWeight: Number,
+    deadWeight: Number,
+    packageDimensions: {
+      length: Number,
+      breadth: Number,
+      height: Number
+    },
+    rapidShypOrderId: String,
+    rtoShipmentId: String,
+    rtoAwb: String,
+    rtoDeliveredAt: Date,
+    events: [
+      {
+        type: { type: String },
+        at: Date,
+        raw: Object
+      }
+    ]
   },
   // Razorpay specific fields
   razorpayOrderId: String,
@@ -192,7 +228,7 @@ orderSchema.pre('save', async function(next) {
 // Virtual for order summary
 orderSchema.virtual('orderSummary').get(function() {
   return {
-    totalItems: this.orderItems.reduce((sum, item) => sum + item.quantity, 0),
+    totalItems: (this.orderItems && Array.isArray(this.orderItems) ? this.orderItems.reduce((sum, item) => sum + (item.quantity || 0), 0) : 0),
     totalPrice: this.totalPrice,
     status: this.orderStatus
   };
