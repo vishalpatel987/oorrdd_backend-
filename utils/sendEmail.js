@@ -14,10 +14,19 @@ const sendEmail = async (options) => {
   const user = process.env.EMAIL_USER || process.env.SMTP_EMAIL;
   const pass = process.env.EMAIL_PASS || process.env.SMTP_PASSWORD;
 
+  // Check if SMTP is configured
+  if (!host || !user || !pass) {
+    const missing = [];
+    if (!host) missing.push('SMTP_HOST');
+    if (!user) missing.push('SMTP_EMAIL');
+    if (!pass) missing.push('SMTP_PASSWORD');
+    throw new Error(`Email configuration missing: ${missing.join(', ')}. Please configure SMTP settings in .env file.`);
+  }
+
   // Log email details BEFORE sending
   console.log('📮 sendEmail function called with:');
   console.log('   TO:', options.email);
-  console.log('   FROM:', process.env.EMAIL_FROM);
+  console.log('   FROM:', process.env.EMAIL_FROM || user);
   console.log('   SUBJECT:', options.subject);
   console.log('   SMTP HOST:', host);
   console.log('   SMTP USER:', user);
@@ -54,11 +63,17 @@ const sendEmail = async (options) => {
   console.log('   to:', message.to);
   console.log('   subject:', message.subject);
 
-  const info = await transporter.sendMail(message);
-  console.log('✅✅✅ Message sent successfully!');
-  console.log('   Message ID:', info.messageId);
-  console.log('   Response:', info.response);
-  console.log('   Recipient:', options.email);
+  try {
+    const info = await transporter.sendMail(message);
+    console.log('✅✅✅ Message sent successfully!');
+    console.log('   Message ID:', info.messageId);
+    console.log('   Response:', info.response);
+    console.log('   Recipient:', options.email);
+  } catch (sendError) {
+    console.error('❌ Error sending email:', sendError.message);
+    // Re-throw with more context
+    throw new Error(`Failed to send email to ${options.email}: ${sendError.message}`);
+  }
 };
 
 module.exports = sendEmail;

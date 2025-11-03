@@ -3,134 +3,138 @@ const Contact = require('../models/Contact');
 const sendEmail = require('../utils/sendEmail');
 
 // Create contact form submission
-exports.createContact = asyncHandler(async (req, res) => {
+// NOTE: Not using asyncHandler here because we send response immediately
+// and handle errors in background async function
+exports.createContact = (req, res) => {
+  console.log('');
+  console.log('========================================');
+  console.log('📧 CONTACT FORM REQUEST RECEIVED');
+  console.log('========================================');
+  console.log('Time:', new Date().toISOString());
+  console.log('Method:', req.method);
+  console.log('URL:', req.originalUrl || req.url);
+  console.log('Body:', { name: req.body.name, email: req.body.email, subject: req.body.subject });
+  console.log('========================================');
+  
   const { name, email, subject, message } = req.body;
 
   // Validation
   if (!name || !email || !message) {
+    console.log('❌ Validation failed - missing required fields');
     return res.status(400).json({ 
       success: false,
       message: 'Name, email, and message are required' 
     });
   }
 
-  // Create contact entry in database
-  const contact = await Contact.create({
-    name,
-    email,
-    subject: subject || 'General Inquiry',
-    message,
-    status: 'new'
-  });
-
-  // Admin email - MUST read from .env file (ADMIN_EMAIL variable)
-  // This is where admin will receive contact form notifications
-  // Priority: ADMIN_EMAIL > CONTACT_ADMIN_EMAIL > default support@mvstore.com
-  // NOTE: Do NOT use SMTP_EMAIL as fallback - that's for sending emails, not receiving
-  
-  // DEBUG: Show all ADMIN_EMAIL related env variables
-  console.log('');
-  console.log('========================================');
-  console.log('🔍 DEBUGGING ADMIN EMAIL FROM .ENV');
-  console.log('========================================');
-  console.log('process.env.ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? `✅ "${process.env.ADMIN_EMAIL}"` : '❌ NOT SET');
-  console.log('process.env.ADMIN_EMAIL (typeof):', typeof process.env.ADMIN_EMAIL);
-  console.log('process.env.ADMIN_EMAIL (length):', process.env.ADMIN_EMAIL?.length || 0);
-  console.log('process.env.CONTACT_ADMIN_EMAIL:', process.env.CONTACT_ADMIN_EMAIL || 'NOT SET');
-  
-  // Try to get admin email - strip any whitespace or quotes
+  // Get admin email from .env file
   let adminEmailFromEnv = process.env.ADMIN_EMAIL;
   if (adminEmailFromEnv) {
-    adminEmailFromEnv = adminEmailFromEnv.trim().replace(/^["']|["']$/g, ''); // Remove quotes if any
-    console.log('Cleaned ADMIN_EMAIL:', adminEmailFromEnv);
+    adminEmailFromEnv = adminEmailFromEnv.trim().replace(/^["']|["']$/g, '');
   }
   
   const adminEmail = adminEmailFromEnv || 
                      (process.env.CONTACT_ADMIN_EMAIL?.trim().replace(/^["']|["']$/g, '')) || 
                      'support@mvstore.com';
-  
-  console.log('Final adminEmail to use:', adminEmail);
-  console.log('========================================');
-  console.log('');
-  
-  // Validate admin email is set from .env
-  if (!adminEmailFromEnv && !process.env.CONTACT_ADMIN_EMAIL) {
-    console.error('❌❌❌ CRITICAL: ADMIN_EMAIL not set in .env file! ❌❌❌');
-    console.error('⚠️  Current adminEmail (using default):', adminEmail);
-    console.error('⚠️  To fix: Add this line to backend/.env file:');
-    console.error('⚠️  ADMIN_EMAIL=vishalpatel581012@gmail.com');
-    console.error('⚠️  Then RESTART the server!');
-    console.error('');
-  } else {
-    console.log('✅✅✅ Admin email found in .env:', adminEmail);
-  }
-  
-  console.log('========================================');
-  console.log('📧 Contact Form Submission Received');
-  console.log('========================================');
-  console.log('👤 User Email (from form):', email);
-  console.log('   → Customer will receive confirmation email');
-  console.log('📬 Admin Email (notification destination):', adminEmail);
-  console.log('   → Admin will receive notification email');
-  console.log('');
-  
-  // Important check: Ensure admin and user emails are different
-  if (adminEmail.toLowerCase() === email.toLowerCase()) {
-    console.error('❌❌❌ CRITICAL ERROR: Admin email and user email are the same! ❌❌❌');
-    console.error('❌ Admin Email:', adminEmail);
-    console.error('❌ User Email:', email);
-    console.error('❌ This means ADMIN_EMAIL is not properly set in .env file!');
-    console.error('❌ Please add ADMIN_EMAIL=your_admin_email@example.com to backend/.env file');
-  }
-  
-  console.log('📋 Environment Variables Status:');
-  console.log('   ADMIN_EMAIL:', process.env.ADMIN_EMAIL || '❌ NOT SET');
-  console.log('   CONTACT_ADMIN_EMAIL:', process.env.CONTACT_ADMIN_EMAIL || 'NOT SET');
-  console.log('   SMTP_EMAIL:', process.env.SMTP_EMAIL || 'NOT SET (used for sending, not receiving)');
-  console.log('========================================');
-  
-  // Helper function to format date safely with non-breaking spaces for mobile email compatibility
-  const formatDate = (date) => {
-    if (!date) {
-      const d = new Date();
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      const year = d.getFullYear();
-      const hours = String(d.getHours() % 12 || 12).padStart(2, '0');
-      const minutes = String(d.getMinutes()).padStart(2, '0');
-      const seconds = String(d.getSeconds()).padStart(2, '0');
-      const ampm = d.getHours() >= 12 ? 'PM' : 'AM';
-      return `${month}/${day}/${year},&nbsp;${hours}:${minutes}:${seconds}&nbsp;${ampm}`;
-    }
-    try {
-      const d = date instanceof Date ? date : new Date(date);
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      const year = d.getFullYear();
-      const hours = String(d.getHours() % 12 || 12).padStart(2, '0');
-      const minutes = String(d.getMinutes()).padStart(2, '0');
-      const seconds = String(d.getSeconds()).padStart(2, '0');
-      const ampm = d.getHours() >= 12 ? 'PM' : 'AM';
-      // Use non-breaking spaces (&nbsp;) to prevent breaking on mobile
-      return `${month}/${day}/${year},&nbsp;${hours}:${minutes}:${seconds}&nbsp;${ampm}`;
-    } catch (e) {
-      const d = new Date();
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      const year = d.getFullYear();
-      const hours = String(d.getHours() % 12 || 12).padStart(2, '0');
-      const minutes = String(d.getMinutes()).padStart(2, '0');
-      const seconds = String(d.getSeconds()).padStart(2, '0');
-      const ampm = d.getHours() >= 12 ? 'PM' : 'AM';
-      return `${month}/${day}/${year},&nbsp;${hours}:${minutes}:${seconds}&nbsp;${ampm}`;
-    }
+
+  // Prepare contact data
+  const contactData = {
+    name,
+    email,
+    subject: subject || 'General Inquiry',
+    message,
+    status: 'new'
   };
 
-  // Send email notification to admin (SEPARATE from customer email)
-  let adminEmailSent = false;
+  // Generate a temporary ID for immediate response
+  const tempContactId = 'temp_' + Date.now();
+  
+  // Send success response IMMEDIATELY (before database save)
+  console.log('✅ Sending success response to frontend IMMEDIATELY (before DB save)...');
+  
   try {
+    // Send response IMMEDIATELY (res.json() automatically sends and ends)
+    res.status(201).json({
+      success: true,
+      message: 'Thank you for contacting us! We have received your message and will get back to you soon.',
+      data: {
+        id: tempContactId,
+        name: name,
+        email: email
+      }
+    });
+    console.log('✅✅✅ Success response sent to frontend - returning immediately');
+  } catch (responseError) {
+    console.error('Error sending response:', responseError);
+    // If response already sent, that's fine
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to process request'
+      });
+    }
+  }
+
+  // NOW save to database and send emails in background (non-blocking)
+  // Use setImmediate to ensure response is fully sent before starting background work
+  setImmediate(() => {
+    (async () => {
+    let contact;
+    let dbSaveSuccess = false;
+    
+    try {
+      // Try to save to database (with 5 second timeout)
+      const savePromise = Contact.create(contactData);
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Database save timeout')), 5000);
+      });
+      
+      contact = await Promise.race([savePromise, timeoutPromise]);
+      dbSaveSuccess = true;
+      console.log('✅ Contact saved to database successfully. ID:', contact._id);
+    } catch (dbError) {
+      console.error('Database error creating contact:', dbError.message);
+      
+      // Try to save in background again (one more time)
+      try {
+        console.log('🔄 Retrying database save in background...');
+        contact = await Contact.create(contactData);
+        dbSaveSuccess = true;
+        console.log('✅ Contact saved in background. ID:', contact._id);
+      } catch (retryError) {
+        console.error('❌ Background save failed:', retryError.message);
+        // Create temp contact for email purposes
+        contact = {
+          _id: tempContactId,
+          ...contactData,
+          createdAt: new Date()
+        };
+      }
+    }
+
+    // Prepare emails using saved contact or temp contact
+    if (!contact) {
+      contact = {
+        _id: tempContactId,
+        ...contactData,
+        createdAt: new Date()
+      };
+    }
+
+    // Wait a bit to ensure response is fully sent before starting emails
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Prepare admin notification email
     const emailSubject = `New Contact Form Submission: ${subject || 'General Inquiry'}`;
-    const submittedDate = formatDate(contact.createdAt || contact.created_at || new Date());
+    const submittedDate = new Date(contact.createdAt).toLocaleString('en-IN', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    });
     
     const emailMessage = `
 A new contact form submission has been received:
@@ -150,127 +154,94 @@ Please respond to the customer at: ${email}
     `;
 
     const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta http-equiv="X-UA-Compatible" content="IE=edge">
-      </head>
-      <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f9f9f9;">
-        <div style="max-width: 600px; margin: 0 auto; padding: 10px;">
-          <div style="background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-            <h2 style="color: #3b82f6; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #3b82f6; font-size: 22px;">
-              New Contact Form Submission
-            </h2>
-            
-            <div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 20px 0;">
-              <h3 style="color: #333; font-size: 18px; margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 2px solid #d1d5db;">
-                Submission Details
-              </h3>
-              
-              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="width: 100%; border-collapse: collapse; table-layout: fixed;">
-                <tr>
-                  <td width="120" style="font-weight: bold; color: #333; font-size: 14px; padding: 12px 12px 12px 0; vertical-align: top; width: 120px;">Name:</td>
-                  <td style="color: #555; font-size: 15px; padding: 12px 0; word-wrap: break-word; word-break: break-word; line-height: 1.5;">${name}</td>
-                </tr>
-                <tr>
-                  <td width="120" style="font-weight: bold; color: #333; font-size: 14px; padding: 12px 12px 12px 0; vertical-align: top; width: 120px;">Email:</td>
-                  <td style="color: #555; font-size: 15px; padding: 12px 0; word-wrap: break-word; word-break: break-word; line-height: 1.5;">
-                    <a href="mailto:${email}" style="color: #3b82f6; text-decoration: none; word-wrap: break-word; word-break: break-all; display: inline-block; max-width: 100%;">${email}</a>
-                  </td>
-                </tr>
-                <tr>
-                  <td width="120" style="font-weight: bold; color: #333; font-size: 14px; padding: 12px 12px 12px 0; vertical-align: top; width: 120px;">Subject:</td>
-                  <td style="color: #555; font-size: 15px; padding: 12px 0; word-wrap: break-word; word-break: break-word; line-height: 1.5;">${subject || 'General Inquiry'}</td>
-                </tr>
-                <tr>
-                  <td width="120" style="font-weight: bold; color: #333; font-size: 14px; padding: 12px 12px 12px 0; vertical-align: top; width: 120px;">Submitted:</td>
-                  <td style="color: #555; font-size: 15px; padding: 12px 0; font-family: Arial, sans-serif; line-height: 1.5;">
-                    <span style="white-space: nowrap; display: inline-block;">${submittedDate}</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td width="120" style="font-weight: bold; color: #333; font-size: 14px; padding: 12px 12px 12px 0; vertical-align: top; width: 120px;">Contact ID:</td>
-                  <td style="color: #555; font-size: 14px; padding: 12px 0; line-height: 1.6; word-wrap: break-word; word-break: break-word;">
-                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="width: 100%; border-collapse: collapse;">
-                      <tr>
-                        <td style="font-family: 'Courier New', Courier, monospace; font-size: 13px; background-color: #f9f9f9; padding: 10px; border-radius: 4px; border: 1px solid #e5e7eb; word-wrap: break-word; word-break: break-all; letter-spacing: 0.5px; overflow-wrap: break-word; max-width: 100%;">${contact._id}</td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-            </div>
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+        <div style="background-color: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h2 style="color: #3b82f6; margin-bottom: 20px; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">
+            New Contact Form Submission
+          </h2>
+          
+          <div style="background-color: #f3f4f6; padding: 20px; border-radius: 6px; margin: 20px 0;">
+            <h3 style="color: #333; font-size: 18px; margin-top: 0; border-bottom: 2px solid #d1d5db; padding-bottom: 10px;">
+              Submission Details
+            </h3>
+            <table style="width: 100%; color: #555; line-height: 2;">
+              <tr>
+                <td style="font-weight: bold; width: 120px;">Name:</td>
+                <td>${name}</td>
+              </tr>
+              <tr>
+                <td style="font-weight: bold;">Email:</td>
+                <td><a href="mailto:${email}" style="color: #3b82f6; text-decoration: none;">${email}</a></td>
+              </tr>
+              <tr>
+                <td style="font-weight: bold;">Subject:</td>
+                <td>${subject || 'General Inquiry'}</td>
+              </tr>
+              <tr>
+                <td style="font-weight: bold;">Submitted:</td>
+                <td>${submittedDate}</td>
+              </tr>
+              <tr>
+                <td style="font-weight: bold;">Contact ID:</td>
+                <td style="font-family: monospace; font-size: 12px;">${contact._id}</td>
+              </tr>
+            </table>
+          </div>
 
-            
-            <div style="background-color: #eff6ff; border-left: 4px solid #3b82f6; padding: 15px; margin: 20px 0; border-radius: 6px;">
-              <h3 style="color: #1e40af; font-size: 18px; margin: 0 0 10px 0; padding-bottom: 10px; border-bottom: 2px solid #3b82f6;">
-                Message
-              </h3>
-              <p style="color: #1e40af; line-height: 1.8; white-space: pre-wrap; margin: 0; word-wrap: break-word; overflow-wrap: break-word;">${message}</p>
-            </div>
+          <div style="background-color: #eff6ff; border-left: 4px solid #3b82f6; padding: 20px; margin: 20px 0; border-radius: 6px;">
+            <h3 style="color: #1e40af; font-size: 18px; margin-top: 0; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">
+              Message
+            </h3>
+            <p style="color: #1e40af; line-height: 1.8; white-space: pre-wrap; margin: 0;">${message}</p>
+          </div>
 
-            <div style="background-color: #ecfdf5; border-left: 4px solid #10b981; padding: 15px; margin: 20px 0; border-radius: 6px;">
-              <p style="color: #065f46; margin: 0; font-size: 15px; line-height: 1.6;">
-                <strong>Action Required:</strong> Please respond to the customer at 
-                <a href="mailto:${email}" style="color: #3b82f6; text-decoration: none; font-weight: bold; word-break: break-all; white-space: nowrap;">${email}</a>
-              </p>
-            </div>
-
-            <p style="color: #555; font-size: 13px; margin: 20px 0 0 0; padding-top: 20px; border-top: 1px solid #e5e7eb; line-height: 1.6;">
-              This is an automated notification from MV Store contact form system.
+          <div style="background-color: #ecfdf5; border-left: 4px solid #10b981; padding: 20px; margin: 20px 0; border-radius: 6px;">
+            <p style="color: #065f46; margin: 0; font-size: 15px; line-height: 1.6;">
+              <strong>Action Required:</strong> Please respond to the customer at 
+              <a href="mailto:${email}" style="color: #3b82f6; text-decoration: none; font-weight: bold;">${email}</a>
             </p>
           </div>
         </div>
-      </body>
-      </html>
+      </div>
     `;
 
-    // Send admin notification email - IMPORTANT: This goes to admin email from .env
-    console.log('');
-    console.log('========================================');
-    console.log('📤 STEP 1: Sending ADMIN Notification Email');
-    console.log('========================================');
-    console.log('VERIFICATION:');
-    console.log('   Admin Email from .env (ADMIN_EMAIL):', process.env.ADMIN_EMAIL || 'NOT SET');
-    console.log('   Admin Email to use:', adminEmail);
-    console.log('   User Email from form:', email);
-    console.log('   Are they different?', adminEmail.toLowerCase() !== email.toLowerCase() ? '✅ YES' : '❌ NO (ERROR!)');
-    console.log('');
-    console.log('Email Details:');
-    console.log('   TO (Admin):', adminEmail);
-    console.log('   Subject:', emailSubject);
-    
-    // CRITICAL: Verify we're sending to admin email, not user email
-    if (adminEmail.toLowerCase() === email.toLowerCase()) {
-      throw new Error(`CRITICAL: Admin email (${adminEmail}) is same as user email (${email}). Cannot send notification!`);
+    // Send admin notification email
+    let adminEmailSent = false;
+    try {
+      console.log('');
+      console.log('========================================');
+      console.log('📤 Sending ADMIN Notification Email');
+      console.log('========================================');
+      console.log('Admin Email (from .env):', adminEmail);
+      console.log('User Email:', email);
+      
+      // Verify admin and user emails are different
+      if (adminEmail.toLowerCase() === email.toLowerCase()) {
+        console.warn('⚠️ WARNING: Admin email and user email are the same. Skipping admin email.');
+      } else {
+        await sendEmail({
+          email: adminEmail,
+          subject: emailSubject,
+          message: emailMessage,
+          html: htmlContent,
+          rawHtml: true
+        });
+        
+        adminEmailSent = true;
+        console.log('✅✅✅ Admin notification email sent SUCCESSFULLY to:', adminEmail);
+      }
+      console.log('========================================');
+    } catch (adminEmailError) {
+      console.error('========================================');
+      console.error('❌❌❌ ERROR: Failed to send ADMIN notification email! ❌❌❌');
+      console.error('Admin Email Target:', adminEmail);
+      console.error('Error:', adminEmailError.message);
+      console.error('========================================');
     }
-    
-    await sendEmail({
-      email: adminEmail,  // CRITICAL: Must be adminEmail, NOT email
-      subject: emailSubject,
-      message: emailMessage,
-      html: htmlContent
-    });
-    
-    adminEmailSent = true;
-    console.log('✅✅✅ Admin notification email sent SUCCESSFULLY to:', adminEmail);
-    console.log('========================================');
 
-  } catch (adminEmailError) {
-    console.error('========================================');
-    console.error('❌❌❌ ERROR: Failed to send ADMIN notification email! ❌❌❌');
-    console.error('Admin Email Target:', adminEmail);
-    console.error('Error:', adminEmailError.message);
-    console.error('Error Stack:', adminEmailError.stack);
-    console.error('========================================');
-    // Continue - try to send customer email even if admin email fails
-  }
-  
-  // Prepare customer confirmation email (OUTSIDE try-catch so it's accessible)
-  const customerSubject = 'Thank You for Contacting MV Store';
-  const customerMessage = `
+    // Send customer confirmation email
+    const customerSubject = 'Thank You for Contacting MV Store';
+    const customerMessage = `
 Dear ${name},
 
 Thank you for contacting MV Store! We have received your message and our team will get back to you within 24-48 hours.
@@ -286,7 +257,7 @@ Best Regards,
 MV Store Support Team
     `;
 
-  const customerHtml = `
+    const customerHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
         <div style="background-color: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
           <h2 style="color: #3b82f6; margin-bottom: 20px; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">
@@ -312,7 +283,7 @@ MV Store Support Team
               </tr>
               <tr>
                 <td style="font-weight: bold;">Submitted:</td>
-                <td>${new Date().toLocaleString()}</td>
+                <td>${submittedDate}</td>
               </tr>
             </table>
           </div>
@@ -330,10 +301,6 @@ MV Store Support Team
             </p>
           </div>
 
-          <p style="color: #555; font-size: 14px; line-height: 1.6; margin-top: 30px;">
-            We appreciate your patience and look forward to assisting you.
-          </p>
-
           <p style="color: #333; font-size: 14px; margin-top: 20px; border-top: 1px solid #e5e7eb; padding-top: 20px;">
             Best Regards,<br/>
             <strong style="color: #3b82f6;">MV Store Support Team</strong>
@@ -341,57 +308,45 @@ MV Store Support Team
         </div>
       </div>
     `;
-  
-  // Send customer confirmation email (SEPARATE try-catch)
-  try {
+
+    try {
+      console.log('');
+      console.log('========================================');
+      console.log('📤 Sending CUSTOMER Confirmation Email');
+      console.log('========================================');
+      console.log('Customer Email:', email);
+      
+      await sendEmail({
+        email: email,
+        subject: customerSubject,
+        message: customerMessage,
+        html: customerHtml,
+        rawHtml: true
+      });
+      
+      console.log('✅✅✅ Customer confirmation email sent SUCCESSFULLY to:', email);
+      console.log('========================================');
+    } catch (customerEmailError) {
+      console.error('========================================');
+      console.error('❌❌❌ ERROR: Failed to send CUSTOMER confirmation email! ❌❌❌');
+      console.error('Customer Email Target:', email);
+      console.error('Error:', customerEmailError.message);
+      console.error('========================================');
+    }
+
+    // Final summary
     console.log('');
     console.log('========================================');
-    console.log('📤 STEP 2: Sending CUSTOMER Confirmation Email');
+    console.log('📧 EMAIL SENDING SUMMARY (Background)');
     console.log('========================================');
+    console.log('Admin Email Sent:', adminEmailSent ? '✅ YES' : '❌ NO');
+    console.log('Admin Email Address:', adminEmail);
+    console.log('Customer Email Sent: ✅ YES (or check error above)');
     console.log('Customer Email Address:', email);
-    console.log('Subject:', customerSubject);
-    
-    await sendEmail({
-      email: email,
-      subject: customerSubject,
-      message: customerMessage,
-      html: customerHtml
-    });
-    
-    console.log('✅✅✅ Customer confirmation email sent SUCCESSFULLY to:', email);
     console.log('========================================');
-    
-  } catch (customerEmailError) {
-    console.error('========================================');
-    console.error('❌❌❌ ERROR: Failed to send CUSTOMER confirmation email! ❌❌❌');
-    console.error('Customer Email Target:', email);
-    console.error('Error:', customerEmailError.message);
-    console.error('Error Stack:', customerEmailError.stack);
-    console.error('========================================');
-    // Don't fail the request - contact entry is still saved
-  }
-  
-  // Final summary
-  console.log('');
-  console.log('========================================');
-  console.log('📧 EMAIL SENDING SUMMARY');
-  console.log('========================================');
-  console.log('Admin Email Sent:', adminEmailSent ? '✅ YES' : '❌ NO');
-  console.log('Admin Email Address:', adminEmail);
-  console.log('Customer Email Sent:', '✅ YES (or check error above)');
-  console.log('Customer Email Address:', email);
-  console.log('========================================');
-
-  res.status(201).json({
-    success: true,
-    message: 'Thank you for contacting us! We have received your message and will get back to you soon.',
-    data: {
-      id: contact._id,
-      name: contact.name,
-      email: contact.email
-    }
+    })();
   });
-});
+};
 
 // Admin: Get all contact submissions
 exports.getAllContacts = asyncHandler(async (req, res) => {
@@ -565,13 +520,6 @@ Address: 33, New Alipore, Kolkata 700053
             Best Regards,<br/>
             <strong style="color: #3b82f6;">MV Store Support Team</strong>
           </p>
-
-          <div style="background-color: #f9fafb; padding: 15px; border-radius: 6px; margin-top: 20px; font-size: 12px; color: #6b7280;">
-            <p style="margin: 0;"><strong>Contact Information:</strong></p>
-            <p style="margin: 5px 0;">📞 Phone: +91 9038045143</p>
-            <p style="margin: 5px 0;">📧 Email: support@mvstore.com</p>
-            <p style="margin: 5px 0;">📍 Address: 33, New Alipore, Kolkata 700053</p>
-          </div>
         </div>
       </div>
     `;
@@ -580,7 +528,8 @@ Address: 33, New Alipore, Kolkata 700053
       email: contact.email,
       subject: replySubject,
       message: replyEmailMessage,
-      html: replyHtml
+      html: replyHtml,
+      rawHtml: true
     });
 
     // Update contact status
@@ -606,4 +555,3 @@ Address: 33, New Alipore, Kolkata 700053
     });
   }
 });
-

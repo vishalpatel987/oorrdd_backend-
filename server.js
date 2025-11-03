@@ -57,7 +57,7 @@ const app = express();
 // CORS configuration - must be at the top and explicit for local dev
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://mv-store.vercel.app',
+  'https://oorrdd-frontend.vercel.app',
   'https://mv-store-ram312908-gmailcoms-projects.vercel.app'
 ];
 
@@ -177,7 +177,13 @@ app.get('/api/health', (req, res) => {
 });
 
 // Timeout middleware: respond with 503 if request takes too long
+// BUT skip timeout for contact form (it handles its own response)
 app.use((req, res, next) => {
+  // Skip timeout for contact form - it sends response immediately
+  if (req.path === '/api/contact' && req.method === 'POST') {
+    return next();
+  }
+  
   res.setTimeout(15000, () => {
     if (!res.headersSent) {
       res.status(503).json({ message: 'Server timeout, please try again.' });
@@ -203,7 +209,7 @@ const server = app.listen(PORT, () => {
 // --- SOCKET.IO SETUP ---
 const socketOrigins = [
   'http://localhost:3000',
-  'https://mv-store.vercel.app',
+  'https://oorrdd-frontend.vercel.app',
   'https://mv-store-ram312908-gmailcoms-projects.vercel.app'
 ];
 

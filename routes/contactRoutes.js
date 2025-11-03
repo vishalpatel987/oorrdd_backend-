@@ -6,7 +6,7 @@ const contactController = require('../controllers/contactController');
 // Public route - anyone can submit contact form
 router.post('/', contactController.createContact);
 
-// Admin routes - protected
+// Admin routes - protected (kept for admin to view/manage contacts)
 router.get('/admin', protect, authorize('admin'), contactController.getAllContacts);
 router.get('/admin/:id', protect, authorize('admin'), contactController.getContact);
 router.put('/admin/:id/status', protect, authorize('admin'), contactController.updateContactStatus);
