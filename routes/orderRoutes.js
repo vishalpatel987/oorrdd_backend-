@@ -12,6 +12,7 @@ router.post('/with-payment', orderController.createOrderWithPayment); // For Raz
 
 // Order management routes
 router.get('/', orderController.getOrders);
+router.get('/:id/invoice', orderController.getOrderInvoice);
 router.get('/:id', orderController.getOrder);
 router.put('/:id/status', orderController.updateOrderStatus);
 router.put('/:id/cancel', orderController.cancelOrder);

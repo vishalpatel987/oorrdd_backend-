@@ -206,8 +206,13 @@ exports.updateReview = asyncHandler(async (req, res) => {
   const { rating, comment } = req.body;
   if (rating) review.rating = rating;
   if (comment) review.comment = comment;
+  // Recompute ratings and numReviews
+  product.numReviews = product.reviews.length;
+  product.ratings = product.numReviews > 0
+    ? product.reviews.reduce((acc, r) => acc + Number(r.rating || 0), 0) / product.numReviews
+    : 0;
   await product.save();
-  res.json({ message: 'Review updated', review });
+  res.json({ message: 'Review updated', review, ratings: product.ratings, numReviews: product.numReviews });
 });
 
 // Delete a user's review for a product
@@ -217,8 +222,13 @@ exports.deleteReview = asyncHandler(async (req, res) => {
   const reviewIndex = product.reviews.findIndex(r => r.user.toString() === req.user._id.toString());
   if (reviewIndex === -1) return res.status(404).json({ message: 'Review not found', route: req.originalUrl || req.url });
   product.reviews.splice(reviewIndex, 1);
+  // Recompute ratings and numReviews
+  product.numReviews = product.reviews.length;
+  product.ratings = product.numReviews > 0
+    ? product.reviews.reduce((acc, r) => acc + Number(r.rating || 0), 0) / product.numReviews
+    : 0;
   await product.save();
-  res.json({ message: 'Review deleted' });
+  res.json({ message: 'Review deleted', ratings: product.ratings, numReviews: product.numReviews });
 });
 
 // Add variant to product (Seller only)
@@ -499,16 +509,8 @@ exports.createOrUpdateEventBanner = async (req, res) => {
     return res.status(403).json({ message: 'Only admin can manage event banner' });
   }
   const { title, description, endDate, product } = req.body;
-  let eventBanner = await EventBanner.findOne();
-  if (eventBanner) {
-    eventBanner.title = title;
-    eventBanner.description = description;
-    eventBanner.endDate = endDate;
-    eventBanner.product = product;
-    await eventBanner.save();
-  } else {
-    eventBanner = await EventBanner.create({ title, description, endDate, product });
-  }
+  // Create NEW banner to allow multiple active banners
+  const eventBanner = await EventBanner.create({ title, description, endDate, product, isActive: true });
   res.json(eventBanner);
 };
 
@@ -519,13 +521,20 @@ exports.getEventBanner = async (req, res) => {
   res.json(eventBanner);
 };
 
+// Public: Get all active event banners (multiple)
+exports.getEventBanners = async (req, res) => {
+  const banners = await EventBanner.find({ isActive: true }).sort({ createdAt: -1 }).populate('product');
+  res.json(banners);
+};
+
 // Admin: Delete event banner
 exports.deleteEventBanner = async (req, res) => {
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ message: 'Only admin can delete event banner' });
   }
-  const eventBanner = await EventBanner.findOne();
-  if (!eventBanner) return res.status(404).json({ message: 'No event banner found' });
+  const { id } = req.params;
+  const eventBanner = id ? await EventBanner.findById(id) : await EventBanner.findOne();
+  if (!eventBanner) return res.status(404).json({ message: 'Event banner not found' });
   // Unset isEventProduct on the associated product
   if (eventBanner.product) {
     await Product.findByIdAndUpdate(eventBanner.product, { isEventProduct: false });
@@ -533,6 +542,24 @@ exports.deleteEventBanner = async (req, res) => {
   await eventBanner.deleteOne();
   res.json({ message: 'Event banner deleted' });
 }; 
+
+// Admin: Update specific event banner
+exports.updateEventBanner = async (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Only admin can update event banner' });
+  }
+  const { id } = req.params;
+  const banner = await EventBanner.findById(id);
+  if (!banner) return res.status(404).json({ message: 'Event banner not found' });
+  const { title, description, endDate, product, isActive } = req.body || {};
+  if (title !== undefined) banner.title = title;
+  if (description !== undefined) banner.description = description;
+  if (endDate !== undefined) banner.endDate = endDate;
+  if (product !== undefined) banner.product = product;
+  if (typeof isActive === 'boolean') banner.isActive = isActive;
+  await banner.save();
+  res.json(banner);
+};
 
 // Get discover products
 exports.getDiscoverProducts = async (req, res) => {

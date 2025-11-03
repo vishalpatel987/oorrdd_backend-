@@ -15,7 +15,10 @@ router.get('/category/:categoryId', productController.getProductsByCategory);
 // Event banner routes (must be before /:id)
 router.post('/event-banner', protect, authorize('admin'), productController.createOrUpdateEventBanner);
 router.get('/event-banner', productController.getEventBanner);
-router.delete('/event-banner', protect, authorize('admin'), productController.deleteEventBanner);
+// Multiple banners support
+router.get('/event-banners', productController.getEventBanners);
+router.put('/event-banner/:id', protect, authorize('admin'), productController.updateEventBanner);
+router.delete('/event-banner/:id', protect, authorize('admin'), productController.deleteEventBanner);
 
 // Discover and recommended products
 router.get('/discover', productController.getDiscoverProducts);

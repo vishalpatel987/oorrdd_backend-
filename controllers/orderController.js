@@ -107,7 +107,7 @@ exports.createOrder = asyncHandler(async (req, res) => {
         c.isActive = false;
         await c.save();
       }
-    } catch (e) {
+      } catch (e) {
       // Non-blocking
     }
   }
@@ -281,7 +281,7 @@ exports.createOrderWithPayment = asyncHandler(async (req, res) => {
 
     // After all orders created successfully, mark coupon as used
     if (coupon) {
-      try {
+        try {
         const normalized = String(coupon).trim().toUpperCase();
         const c = await Coupon.findOneAndUpdate(
           { code: normalized, isActive: true },
@@ -292,7 +292,7 @@ exports.createOrderWithPayment = asyncHandler(async (req, res) => {
           c.isActive = false;
           await c.save();
         }
-      } catch (e) {
+        } catch (e) {
         // ignore coupon update errors
       }
     }
@@ -350,6 +350,233 @@ exports.getOrder = asyncHandler(async (req, res) => {
     .populate('orderItems.product', 'name');
   if (!order) return res.status(404).json({ message: 'Order not found', route: req.originalUrl || req.url });
   res.json(order);
+});
+
+// Generate invoice (PDF with fallback to HTML)
+// Access: buyer, seller of the order, or admin
+exports.getOrderInvoice = asyncHandler(async (req, res) => {
+  const order = await Order.findById(req.params.id)
+    .populate('user', 'name email phone')
+    .populate('seller');
+  if (!order) return res.status(404).json({ message: 'Order not found', route: req.originalUrl || req.url });
+
+  // Authorization: owner (user), seller (by userId), or admin
+  let authorized = false;
+  if (String(order.user) === String(req.user._id)) authorized = true;
+  if (req.user.role === 'admin') authorized = true;
+  if (!authorized && req.user.role === 'seller') {
+    const Seller = require('../models/Seller');
+    const sellerDoc = await Seller.findById(order.seller).select('userId');
+    if (sellerDoc && String(sellerDoc.userId) === String(req.user._id)) authorized = true;
+  }
+  if (!authorized) return res.status(403).json({ message: 'Not authorized to view this invoice' });
+
+  // Try PDF
+  try {
+    const PDFDocument = require('pdfkit');
+    // Resolve coupon details (percent vs flat) for display
+    let couponDisplay = '';
+    let couponPercent = null;
+    let couponFlat = null;
+    try {
+      const codeRaw = (typeof order.coupon === 'string' ? order.coupon : (order.coupon?.code || '')).trim();
+      if (codeRaw) {
+        const Coupon = require('../models/Coupon');
+        const couponDoc = await Coupon.findOne({ code: codeRaw.toUpperCase() }).select('code discount');
+        if (couponDoc) {
+          if (couponDoc.discount > 0 && couponDoc.discount <= 100) couponPercent = couponDoc.discount;
+          else if (couponDoc.discount > 100) couponFlat = couponDoc.discount;
+        }
+        couponDisplay = codeRaw.toUpperCase();
+      }
+    } catch (e) { /* non-blocking */ }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename=invoice-${order.orderNumber || order._id}.pdf`);
+    const doc = new PDFDocument({ margin: 40 });
+    doc.pipe(res);
+
+    // Header
+    doc.fontSize(20).text('Invoice', { align: 'right' });
+    doc.moveDown(0.5);
+    doc.fontSize(10).text(`Invoice No: ${order.orderNumber || order._id}`);
+    doc.text(`Date: ${new Date(order.createdAt).toLocaleDateString()}`);
+    doc.moveDown(1);
+
+    // Seller & Buyer
+    const seller = order.seller || {};
+    const buyer = order.user || {};
+    const sAddr = seller.address || {};
+    const bAddr = order.shippingAddress || {};
+    doc.fontSize(12).text('From:', { continued: true }).font('Helvetica-Bold').text(` ${seller.shopName || 'Vendor'}`);
+    doc.font('Helvetica').fontSize(10).text(`${sAddr.street || ''}`);
+    doc.text(`${sAddr.city || ''}, ${sAddr.state || ''} ${sAddr.zipCode || ''}`);
+    doc.text(`${sAddr.country || ''}`);
+    doc.moveDown(0.5);
+    doc.font('Helvetica').fontSize(12).text('Bill To:', { continued: true }).font('Helvetica-Bold').text(` ${buyer.name || buyer.email || ''}`);
+    doc.font('Helvetica').fontSize(10).text(`${bAddr.street || ''}`);
+    doc.text(`${bAddr.city || ''}, ${bAddr.state || ''} ${bAddr.zipCode || ''}`);
+    doc.text(`${bAddr.country || ''}`);
+    doc.moveDown(1);
+
+    // Items table
+    doc.font('Helvetica-Bold').text('Items');
+    doc.moveDown(0.2);
+    doc.font('Helvetica').fontSize(10);
+    const tableTop = doc.y;
+    const col = (x) => 40 + x;
+    doc.text('Item', col(0), tableTop);
+    doc.text('Qty', col(280), tableTop);
+    doc.text('Price', col(330), tableTop);
+    doc.text('Total', col(400), tableTop);
+    doc.moveDown(0.4);
+    doc.moveTo(40, doc.y).lineTo(550, doc.y).strokeColor('#cccccc').stroke();
+    doc.moveDown(0.2);
+    let subtotal = 0;
+    for (const it of order.orderItems || []) {
+      const lineTop = doc.y;
+      const lineTotal = (it.price || 0) * (it.quantity || 0);
+      subtotal += lineTotal;
+      doc.text(it.name || '', col(0), lineTop, { width: 260 });
+      doc.text(String(it.quantity || 0), col(280), lineTop);
+      doc.text(`${(it.price || 0).toFixed(2)}`, col(330), lineTop);
+      doc.text(`${lineTotal.toFixed(2)}`, col(400), lineTop);
+      doc.moveDown(0.2);
+    }
+    doc.moveDown(0.4);
+    doc.moveTo(40, doc.y).lineTo(550, doc.y).strokeColor('#cccccc').stroke();
+    doc.moveDown(0.4);
+
+    // Summary
+    const itemsPrice = order.itemsPrice || subtotal;
+    const shippingPrice = order.shippingPrice || 0;
+    const taxPrice = order.taxPrice || 0;
+    const storedDiscount = Number(order.discount || 0);
+    const couponCode = typeof order.coupon === 'string' ? order.coupon : (order.coupon?.code || '');
+    const computedGross = (itemsPrice + shippingPrice + taxPrice);
+    const totalPrice = (typeof order.totalPrice === 'number') ? order.totalPrice : (computedGross - storedDiscount);
+    // If discount not stored but total is discounted, infer effective discount
+    const effectiveDiscount = storedDiscount > 0 ? storedDiscount : Math.max(0, computedGross - (Number(totalPrice) || computedGross));
+    doc.text(`Items: ₹${itemsPrice.toFixed(2)}`, { align: 'right' });
+    doc.text(`Shipping: ₹${shippingPrice.toFixed(2)}`, { align: 'right' });
+    doc.text(`Tax: ₹${taxPrice.toFixed(2)}`, { align: 'right' });
+    if (effectiveDiscount > 0) {
+      const labelParts = [];
+      if (couponCode) labelParts.push(couponCode);
+      if (couponPercent) labelParts.push(`${couponPercent}%`);
+      if (couponFlat && !couponPercent) labelParts.push(`₹${Number(couponFlat).toFixed(2)}`);
+      const label = labelParts.length ? ` (${labelParts.join(' — ')})` : '';
+      doc.text(`Discount${label}: -₹${effectiveDiscount.toFixed(2)}`, { align: 'right' });
+      doc.fontSize(9).fillColor('#6b7280').text(`You saved ₹${effectiveDiscount.toFixed(2)} with coupon${couponDisplay ? ` ${couponDisplay}` : ''}.`, { align: 'right' });
+      doc.fillColor('black').fontSize(10);
+    }
+    doc.font('Helvetica-Bold').text(`Total: ₹${totalPrice.toFixed(2)}`, { align: 'right' });
+    doc.font('Helvetica').moveDown(1);
+    doc.text(`Payment: ${order.paymentMethod?.toUpperCase() || ''} — ${order.paymentStatus || 'pending'}`);
+    doc.moveDown(1);
+    doc.fontSize(10).fillColor('#666666').text('Thank you for your business. This is a computer generated invoice.');
+
+    doc.end();
+  } catch (e) {
+    // Fallback: HTML invoice
+    const seller = order.seller || {};
+    const buyer = order.user || {};
+    const sAddr = seller.address || {};
+    const bAddr = order.shippingAddress || {};
+    const rows = (order.orderItems || []).map(it => `
+      <tr>
+        <td style="padding:6px 8px;border:1px solid #e5e7eb">${it.name || ''}</td>
+        <td style="padding:6px 8px;border:1px solid #e5e7eb;text-align:right">${it.quantity || 0}</td>
+        <td style="padding:6px 8px;border:1px solid #e5e7eb;text-align:right">₹${(it.price || 0).toFixed(2)}</td>
+        <td style="padding:6px 8px;border:1px solid #e5e7eb;text-align:right">₹${(((it.price || 0) * (it.quantity || 0))).toFixed(2)}</td>
+      </tr>`).join('');
+    const itemsPrice = order.itemsPrice || 0;
+    const shippingPrice = order.shippingPrice || 0;
+    const taxPrice = order.taxPrice || 0;
+    const storedDiscount = Number(order.discount || 0);
+    const couponCode = typeof order.coupon === 'string' ? order.coupon : (order.coupon?.code || '');
+    const gross = itemsPrice + shippingPrice + taxPrice;
+    const totalPrice = (typeof order.totalPrice === 'number') ? order.totalPrice : (gross - storedDiscount);
+    const effectiveDiscount = storedDiscount > 0 ? storedDiscount : Math.max(0, gross - (Number(totalPrice) || gross));
+
+    // Build discount display strings safely for HTML
+    let couponPercentHtml = '';
+    let couponFlatHtml = '';
+    try {
+      if (couponCode) {
+        const Coupon = require('../models/Coupon');
+        const c = await Coupon.findOne({ code: String(couponCode).toUpperCase() }).select('discount');
+        if (c) {
+          if (c.discount > 0 && c.discount <= 100) couponPercentHtml = `${c.discount}%`;
+          else if (c.discount > 100) couponFlatHtml = `₹${Number(c.discount).toFixed(2)}`;
+        }
+      }
+    } catch (e) { /* non-blocking */ }
+
+    const labelPartsHtml = [];
+    if (couponCode) labelPartsHtml.push(String(couponCode).toUpperCase());
+    if (couponPercentHtml) labelPartsHtml.push(couponPercentHtml);
+    else if (couponFlatHtml) labelPartsHtml.push(couponFlatHtml);
+    const discountLabelSuffix = labelPartsHtml.length ? ` (${labelPartsHtml.join(' — ')})` : '';
+    const discountRowHTML = effectiveDiscount > 0
+      ? `<div style="display:flex;justify-content:space-between"><span>Discount${discountLabelSuffix}</span><span>-₹${effectiveDiscount.toFixed(2)}</span></div>`
+      : '';
+    const savedNoteHTML = effectiveDiscount > 0
+      ? `<div style="margin-top:4px;font-size:12px;color:#6b7280;text-align:right">You saved ₹${effectiveDiscount.toFixed(2)}${couponCode ? ` with coupon ${String(couponCode).toUpperCase()}` : ''}.</div>`
+      : '';
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(`
+      <!doctype html>
+      <html><head><meta charset="utf-8"/><title>Invoice ${order.orderNumber || order._id}</title>
+      <style>body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:24px;color:#111827}</style>
+      </head><body>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-size:24px;font-weight:700">Invoice</div>
+          <div style="font-size:12px;color:#6b7280">Invoice No: ${order.orderNumber || order._id}</div>
+          <div style="font-size:12px;color:#6b7280">Date: ${new Date(order.createdAt).toLocaleDateString()}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:48px;margin:16px 0 24px">
+        <div>
+          <div style="font-weight:600">From</div>
+          <div>${seller.shopName || 'Vendor'}</div>
+          <div style="font-size:12px;color:#6b7280">${sAddr.street || ''}</div>
+          <div style="font-size:12px;color:#6b7280">${sAddr.city || ''}, ${sAddr.state || ''} ${sAddr.zipCode || ''}</div>
+          <div style="font-size:12px;color:#6b7280">${sAddr.country || ''}</div>
+        </div>
+        <div>
+          <div style="font-weight:600">Bill To</div>
+          <div>${buyer.name || buyer.email || ''}</div>
+          <div style="font-size:12px;color:#6b7280">${bAddr.street || ''}</div>
+          <div style="font-size:12px;color:#6b7280">${bAddr.city || ''}, ${bAddr.state || ''} ${bAddr.zipCode || ''}</div>
+          <div style="font-size:12px;color:#6b7280">${bAddr.country || ''}</div>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:16px">
+        <thead>
+          <tr>
+            <th style="text-align:left;padding:6px 8px;border:1px solid #e5e7eb">Item</th>
+            <th style="text-align:right;padding:6px 8px;border:1px solid #e5e7eb">Qty</th>
+            <th style="text-align:right;padding:6px 8px;border:1px solid #e5e7eb">Price</th>
+            <th style="text-align:right;padding:6px 8px;border:1px solid #e5e7eb">Total</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-left:auto;max-width:320px">
+        <div style="display:flex;justify-content:space-between"><span>Items</span><span>₹${itemsPrice.toFixed(2)}</span></div>
+        <div style="display:flex;justify-content:space-between"><span>Shipping</span><span>₹${shippingPrice.toFixed(2)}</span></div>
+        <div style="display:flex;justify-content:space-between"><span>Tax</span><span>₹${taxPrice.toFixed(2)}</span></div>
+        ${discountRowHTML}
+        <div style="display:flex;justify-content:space-between;font-weight:700"><span>Total</span><span>₹${totalPrice.toFixed(2)}</span></div>
+        <div style="margin-top:8px;font-size:12px;color:#6b7280">Payment: ${order.paymentMethod?.toUpperCase() || ''} — ${order.paymentStatus || 'pending'}</div>
+        ${savedNoteHTML}
+      </div>
+      <p style="font-size:12px;color:#6b7280;margin-top:24px">Thank you for your business.</p>
+      <script>window.onload = () => { window.print && window.print(); };</script>
+      </body></html>
+    `);
+  }
 });
 
 // Update order status (for seller)

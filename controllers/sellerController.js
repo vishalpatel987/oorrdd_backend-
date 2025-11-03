@@ -514,6 +514,113 @@ exports.getStats = async (req, res) => {
   }
 }; 
 
+// Sales report (seller) grouped by period
+// @route GET /api/sellers/reports/sales?period=daily|monthly|yearly
+exports.getSalesReport = async (req, res) => {
+  try {
+    const period = (req.query.period || 'daily').toLowerCase();
+    const SellerModel = Seller;
+    const Order = require('../models/Order');
+
+    const seller = await SellerModel.findOne({ userId: req.user._id });
+    if (!seller) return res.status(404).json({ message: 'Seller not found' });
+
+    // Date format expression per period
+    let dateFormat = '%Y-%m-%d';
+    if (period === 'monthly') dateFormat = '%Y-%m';
+    else if (period === 'yearly') dateFormat = '%Y';
+
+    // Define paid revenue criteria: online-paid immediately; COD counted only after delivered
+    const paidCriteria = {
+      $or: [
+        { $and: [ { paymentMethod: { $ne: 'cod' } }, { paymentStatus: 'paid' } ] },
+        { $and: [ { paymentMethod: 'cod' }, { orderStatus: 'delivered' } ] }
+      ]
+    };
+
+    // Primary: aggregation (timezone-aware buckets)
+    const pipeline = [
+      { $match: { seller: seller._id, ...paidCriteria } },
+      { $group: { _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: 'Asia/Kolkata' } }, revenue: { $sum: { $ifNull: ['$itemsPrice', 0] } }, orders: { $sum: 1 } } },
+      { $sort: { _id: 1 } }
+    ];
+    let data = await Order.aggregate(pipeline);
+
+    // Fallback: compute in JS if aggregation unexpectedly returns empty while orders exist
+    if (!data || data.length === 0) {
+      const orders = await Order.find({ seller: seller._id, ...paidCriteria }).select('createdAt itemsPrice paymentMethod paymentStatus orderStatus');
+      if (orders && orders.length > 0) {
+        const map = new Map();
+        const fmt = (d) => {
+          const dt = new Date(d);
+          if (period === 'yearly') return String(dt.getFullYear());
+          if (period === 'monthly') return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+          return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+        };
+        for (const o of orders) {
+          const key = fmt(o.createdAt);
+          const prev = map.get(key) || { revenue: 0, orders: 0 };
+          prev.revenue += Number(o.itemsPrice || 0);
+          prev.orders += 1;
+          map.set(key, prev);
+        }
+        data = Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => ({ _id: k, revenue: v.revenue, orders: v.orders }));
+      }
+    }
+
+    return res.json({ success: true, data });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to build sales report', error: error.message });
+  }
+};
+
+// Order status summary for seller
+// @route GET /api/sellers/orders/status-summary
+exports.getOrderStatusSummary = async (req, res) => {
+  try {
+    const SellerModel = Seller;
+    const Order = require('../models/Order');
+    const seller = await SellerModel.findOne({ userId: req.user._id });
+    if (!seller) return res.status(404).json({ message: 'Seller not found' });
+
+    // Primary: aggregation
+    let agg = await Order.aggregate([
+      { $match: { seller: seller._id } },
+      { $group: { _id: '$orderStatus', count: { $sum: 1 } } }
+    ]);
+
+    // Fallback to JS if aggregation empty but orders exist
+    if (!agg || agg.length === 0) {
+      const list = await Order.find({ seller: seller._id }).select('orderStatus');
+      const map = new Map();
+      for (const o of list) {
+        const s = o.orderStatus || 'unknown';
+        map.set(s, (map.get(s) || 0) + 1);
+      }
+      agg = Array.from(map.entries()).map(([k, v]) => ({ _id: k, count: v }));
+    }
+
+    const counts = agg.reduce((acc, cur) => {
+      acc[cur._id || 'unknown'] = cur.count;
+      return acc;
+    }, {});
+
+    const summary = {
+      pending: counts.pending || 0,
+      confirmed: counts.confirmed || 0,
+      processing: counts.processing || 0,
+      shipped: counts.shipped || 0,
+      delivered: counts.delivered || 0,
+      cancelled: counts.cancelled || 0,
+      refunded: counts.refunded || 0
+    };
+
+    return res.json({ success: true, summary, raw: counts });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to fetch status summary', error: error.message });
+  }
+};
+
 // Wallet overview for seller
 exports.getWalletOverview = async (req, res) => {
   try {
@@ -557,5 +664,59 @@ exports.getWalletOverview = async (req, res) => {
     res.json({ availableBalance, totalEarnings, totalWithdrawn: withdrawnAmount, pendingWithdrawals: pendingAmount });
   } catch (error) {
     res.status(500).json({ message: 'Failed to compute wallet', error: error.message });
+  }
+};
+
+// Get reviews for current seller's products
+exports.getMyReviews = async (req, res) => {
+  try {
+    const seller = await Seller.findOne({ userId: req.user._id });
+    if (!seller) return res.status(404).json({ message: 'Seller not found' });
+    const Product = require('../models/Product');
+    const products = await Product.find({ seller: seller._id }).select('name reviews');
+    const reviews = [];
+    for (const p of products) {
+      for (const r of (p.reviews || [])) {
+        reviews.push({
+          productId: p._id,
+          productName: p.name,
+          reviewId: r._id,
+          userId: r.user,
+          userName: r.name,
+          rating: r.rating,
+          comment: r.comment,
+          createdAt: r.createdAt,
+          sellerReply: r.sellerReply || null
+        });
+      }
+    }
+    res.json(reviews.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
+  } catch (e) {
+    res.status(500).json({ message: 'Failed to fetch reviews', error: e.message });
+  }
+};
+
+// Reply to a specific review for a product owned by current seller
+exports.replyToReview = async (req, res) => {
+  try {
+    const { productId, reviewId } = req.params;
+    const { text } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ message: 'Reply text is required' });
+
+    const seller = await Seller.findOne({ userId: req.user._id });
+    if (!seller) return res.status(404).json({ message: 'Seller not found' });
+
+    const Product = require('../models/Product');
+    const product = await Product.findOne({ _id: productId, seller: seller._id });
+    if (!product) return res.status(404).json({ message: 'Product not found or not owned by seller' });
+
+    const review = (product.reviews || []).find(r => String(r._id) === String(reviewId));
+    if (!review) return res.status(404).json({ message: 'Review not found' });
+
+    review.sellerReply = { text: text.trim(), at: new Date() };
+    await product.save();
+    res.json({ message: 'Reply saved', sellerReply: review.sellerReply });
+  } catch (e) {
+    res.status(500).json({ message: 'Failed to reply to review', error: e.message });
   }
 };

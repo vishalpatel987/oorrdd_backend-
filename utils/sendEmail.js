@@ -1,4 +1,12 @@
 const nodemailer = require('nodemailer');
+const renderEmailLayout = require('./emailLayout');
+
+function stripHtml(html) {
+  if (!html) return '';
+  return String(html).replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ') // collapse whitespace
+    .trim();
+}
 
 const sendEmail = async (options) => {
   const host = process.env.EMAIL_HOST || process.env.SMTP_HOST;
@@ -21,12 +29,23 @@ const sendEmail = async (options) => {
     auth: { user, pass },
   });
 
+  // Build HTML using a standard brand layout unless explicitly disabled
+  const htmlBody = options.rawHtml === true
+    ? (options.html || '')
+    : renderEmailLayout({
+        subject: options.subject,
+        title: options.title || options.subject,
+        preheader: options.preheader || options.previewText,
+        contentHtml: options.html || `<p>${(options.message || '').toString().replace(/\n/g, '<br/>')}</p>`,
+        cta: options.cta
+      });
+
   const message = {
     from: process.env.EMAIL_FROM,
-    to: options.email,  // IMPORTANT: This is the recipient email
+    to: options.email,  // recipient email
     subject: options.subject,
-    text: options.message,
-    html: options.html,
+    text: options.text || stripHtml(options.message || options.html),
+    html: htmlBody,
   };
 
   // Double verify the email addresses

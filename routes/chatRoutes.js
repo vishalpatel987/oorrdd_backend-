@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const User = require('../models/User');
+const Seller = require('../models/Seller');
 const multer = require('multer');
 const path = require('path');
 
@@ -133,10 +134,18 @@ router.get('/messages/:conversationId', protect, async (req, res) => {
 // Start a new conversation (or get existing)
 router.post('/conversations', protect, async (req, res) => {
   try {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ message: 'userId is required' });
+    const { userId, sellerId } = req.body;
+    if (!userId && !sellerId) return res.status(400).json({ message: 'userId or sellerId is required' });
     const selfId = toObjectId(req.user._id);
-    const otherId = toObjectId(userId);
+    let otherResolvedId = null;
+    if (userId) {
+      otherResolvedId = toObjectId(userId);
+    } else if (sellerId) {
+      // Allow starting a chat using Seller collection id by resolving to the seller's userId
+      const seller = mongoose.isValidObjectId(String(sellerId)) ? await Seller.findById(sellerId).select('userId') : null;
+      otherResolvedId = seller ? toObjectId(seller.userId) : null;
+    }
+    const otherId = otherResolvedId;
     if (!selfId || !otherId) return res.status(400).json({ message: 'Invalid ids' });
     let conversation = await Conversation.findOne({ participants: { $all: [selfId, otherId] } });
     if (!conversation) {
@@ -153,7 +162,7 @@ router.post('/conversations', protect, async (req, res) => {
 // Send a message
 router.post('/messages', protect, async (req, res) => {
   try {
-    const { conversationId, text } = req.body;
+    const { conversationId, text, fileUrl, fileType } = req.body;
     if (!conversationId) return res.status(400).json({ message: 'conversationId is required' });
     const selfId = toObjectId(req.user._id);
     if (!selfId) return res.status(400).json({ message: 'Invalid user id' });
@@ -161,6 +170,8 @@ router.post('/messages', protect, async (req, res) => {
       conversation: conversationId,
       sender: selfId,
       text,
+      fileUrl,
+      fileType,
       delivered: true
     });
     res.json(message);

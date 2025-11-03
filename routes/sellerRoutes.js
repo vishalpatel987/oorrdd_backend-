@@ -25,7 +25,13 @@ router.delete('/products/:id', sellerController.deleteProduct);
 router.get('/orders', sellerController.getOrders);
 router.put('/orders/:id/status', sellerController.updateOrderStatus);
 router.get('/stats', sellerController.getStats);
+router.get('/reports/sales', sellerController.getSalesReport);
+router.get('/orders/status-summary', sellerController.getOrderStatusSummary);
 router.get('/wallet/overview', sellerController.getWalletOverview);
 router.put('/products/:id/sold-count', sellerController.updateSoldCount);
+
+// Reviews for seller
+router.get('/reviews', sellerController.getMyReviews);
+router.post('/reviews/:productId/:reviewId/reply', sellerController.replyToReview);
 
 module.exports = router; 

@@ -305,7 +305,7 @@ exports.schedulePickup = asyncHandler(async (req, res) => {
       order.shipment.pickupScheduledAt = new Date(pickupDate);
     }
 
-    await order.save();
+  await order.save();
   }
 
   res.json({
