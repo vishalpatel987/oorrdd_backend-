@@ -14,19 +14,19 @@ const Conversation = require('./models/Conversation');
 // Load environment variables - explicitly from backend/.env
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-// Debug: Log ADMIN_EMAIL after loading (only in development)
-if (process.env.NODE_ENV !== 'production') {
-  console.log('');
-  console.log('========================================');
-  console.log('🔍 ENVIRONMENT VARIABLES DEBUG');
-  console.log('========================================');
-  console.log('ADMIN_EMAIL:', process.env.ADMIN_EMAIL || '❌ NOT SET');
-  console.log('SMTP_EMAIL:', process.env.SMTP_EMAIL || 'NOT SET');
-  console.log('SMTP_HOST:', process.env.SMTP_HOST || 'NOT SET');
-  console.log('EMAIL_FROM:', process.env.EMAIL_FROM || 'NOT SET');
-  console.log('========================================');
-  console.log('');
-}
+// Debug: Log ADMIN_EMAIL and SMTP config (always log, but hide sensitive data in production)
+console.log('');
+console.log('========================================');
+console.log('🔍 ENVIRONMENT VARIABLES DEBUG');
+console.log('========================================');
+console.log('NODE_ENV:', process.env.NODE_ENV || 'development');
+console.log('ADMIN_EMAIL:', process.env.ADMIN_EMAIL || '❌ NOT SET');
+console.log('SMTP_EMAIL:', process.env.SMTP_EMAIL ? (process.env.NODE_ENV === 'production' ? '***SET***' : process.env.SMTP_EMAIL) : '❌ NOT SET');
+console.log('SMTP_HOST:', process.env.SMTP_HOST || process.env.EMAIL_HOST || '❌ NOT SET');
+console.log('SMTP_PASSWORD:', process.env.SMTP_PASSWORD || process.env.EMAIL_PASS ? (process.env.NODE_ENV === 'production' ? '***SET***' : '***SET***') : '❌ NOT SET');
+console.log('EMAIL_FROM:', process.env.EMAIL_FROM || 'NOT SET');
+console.log('========================================');
+console.log('');
 
 // Import routes
 const authRoutes = require('./routes/authRoutes');

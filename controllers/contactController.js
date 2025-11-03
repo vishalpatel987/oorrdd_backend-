@@ -207,18 +207,35 @@ Please respond to the customer at: ${email}
 
     // Send admin notification email
     let adminEmailSent = false;
+    let adminEmailError = null;
     try {
       console.log('');
       console.log('========================================');
       console.log('📤 Sending ADMIN Notification Email');
       console.log('========================================');
+      console.log('Environment:', process.env.NODE_ENV || 'development');
       console.log('Admin Email (from .env):', adminEmail);
       console.log('User Email:', email);
+      
+      // Check SMTP configuration before attempting to send
+      const smtpHost = process.env.EMAIL_HOST || process.env.SMTP_HOST;
+      const smtpUser = process.env.EMAIL_USER || process.env.SMTP_EMAIL;
+      const smtpPass = process.env.EMAIL_PASS || process.env.SMTP_PASSWORD;
+      
+      console.log('SMTP Config Check:');
+      console.log('  SMTP_HOST:', smtpHost ? '✅ SET' : '❌ MISSING');
+      console.log('  SMTP_EMAIL:', smtpUser ? '✅ SET' : '❌ MISSING');
+      console.log('  SMTP_PASSWORD:', smtpPass ? '✅ SET' : '❌ MISSING');
       
       // Verify admin and user emails are different
       if (adminEmail.toLowerCase() === email.toLowerCase()) {
         console.warn('⚠️ WARNING: Admin email and user email are the same. Skipping admin email.');
+        adminEmailError = new Error('Admin and user emails are the same');
+      } else if (!smtpHost || !smtpUser || !smtpPass) {
+        console.error('❌ SMTP configuration missing! Cannot send email.');
+        adminEmailError = new Error('SMTP configuration missing');
       } else {
+        console.log('Attempting to send email...');
         await sendEmail({
           email: adminEmail,
           subject: emailSubject,
@@ -231,11 +248,15 @@ Please respond to the customer at: ${email}
         console.log('✅✅✅ Admin notification email sent SUCCESSFULLY to:', adminEmail);
       }
       console.log('========================================');
-    } catch (adminEmailError) {
+    } catch (emailErr) {
+      adminEmailError = emailErr;
       console.error('========================================');
       console.error('❌❌❌ ERROR: Failed to send ADMIN notification email! ❌❌❌');
       console.error('Admin Email Target:', adminEmail);
-      console.error('Error:', adminEmailError.message);
+      console.error('Error Name:', emailErr.name);
+      console.error('Error Message:', emailErr.message);
+      console.error('Error Stack:', emailErr.stack);
+      console.error('Full Error:', JSON.stringify(emailErr, Object.getOwnPropertyNames(emailErr)));
       console.error('========================================');
     }
 
@@ -309,11 +330,15 @@ MV Store Support Team
       </div>
     `;
 
+    // Send customer confirmation email
+    let customerEmailSent = false;
+    let customerEmailError = null;
     try {
       console.log('');
       console.log('========================================');
       console.log('📤 Sending CUSTOMER Confirmation Email');
       console.log('========================================');
+      console.log('Environment:', process.env.NODE_ENV || 'development');
       console.log('Customer Email:', email);
       
       await sendEmail({
@@ -324,13 +349,17 @@ MV Store Support Team
         rawHtml: true
       });
       
+      customerEmailSent = true;
       console.log('✅✅✅ Customer confirmation email sent SUCCESSFULLY to:', email);
       console.log('========================================');
-    } catch (customerEmailError) {
+    } catch (emailErr) {
+      customerEmailError = emailErr;
       console.error('========================================');
       console.error('❌❌❌ ERROR: Failed to send CUSTOMER confirmation email! ❌❌❌');
       console.error('Customer Email Target:', email);
-      console.error('Error:', customerEmailError.message);
+      console.error('Error Name:', emailErr.name);
+      console.error('Error Message:', emailErr.message);
+      console.error('Error Stack:', emailErr.stack);
       console.error('========================================');
     }
 
@@ -339,10 +368,19 @@ MV Store Support Team
     console.log('========================================');
     console.log('📧 EMAIL SENDING SUMMARY (Background)');
     console.log('========================================');
+    console.log('Environment:', process.env.NODE_ENV || 'development');
     console.log('Admin Email Sent:', adminEmailSent ? '✅ YES' : '❌ NO');
     console.log('Admin Email Address:', adminEmail);
-    console.log('Customer Email Sent: ✅ YES (or check error above)');
+    if (adminEmailError) {
+      console.error('Admin Email Error:', adminEmailError.message);
+    }
+    console.log('Customer Email Sent:', customerEmailSent ? '✅ YES' : '❌ NO');
+    if (customerEmailError) {
+      console.error('Customer Email Error:', customerEmailError.message);
+    }
     console.log('Customer Email Address:', email);
+    console.log('Contact ID:', contact._id);
+    console.log('Timestamp:', new Date().toISOString());
     console.log('========================================');
     })();
   });

@@ -69,10 +69,30 @@ const sendEmail = async (options) => {
     console.log('   Message ID:', info.messageId);
     console.log('   Response:', info.response);
     console.log('   Recipient:', options.email);
+    console.log('   Environment:', process.env.NODE_ENV || 'development');
+    
+    // Verify email was actually sent (check response)
+    if (!info.messageId) {
+      throw new Error('Email sent but no message ID returned');
+    }
+    
+    return info;
   } catch (sendError) {
-    console.error('❌ Error sending email:', sendError.message);
+    console.error('❌ Error sending email:');
+    console.error('   Error Type:', sendError.name);
+    console.error('   Error Message:', sendError.message);
+    console.error('   Error Code:', sendError.code);
+    console.error('   Error Response:', sendError.response);
+    console.error('   Error Command:', sendError.command);
+    console.error('   Environment:', process.env.NODE_ENV || 'development');
+    console.error('   SMTP Host:', host);
+    console.error('   SMTP User:', user);
+    console.error('   To Email:', options.email);
+    console.error('   From Email:', message.from);
+    
     // Re-throw with more context
-    throw new Error(`Failed to send email to ${options.email}: ${sendError.message}`);
+    const errorMessage = `Failed to send email to ${options.email}: ${sendError.message}${sendError.code ? ` (Code: ${sendError.code})` : ''}`;
+    throw new Error(errorMessage);
   }
 };
 
