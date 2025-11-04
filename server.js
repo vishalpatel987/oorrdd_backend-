@@ -45,6 +45,7 @@ const shippingRoutes = require('./routes/shippingRoutes');
 const returnRoutes = require('./routes/returnRoutes');
 const contactRoutes = require('./routes/contactRoutes');
 const bannerRoutes = require('./routes/bannerRoutes');
+const brandRoutes = require('./routes/brandRoutes');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorMiddleware');
@@ -149,6 +150,7 @@ app.use('/api/sellers', sellerRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/banners', bannerRoutes);
+app.use('/api/brands', brandRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/coupons', couponRoutes);
 app.use('/api/translate', translateRoutes);

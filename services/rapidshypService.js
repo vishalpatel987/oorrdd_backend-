@@ -528,23 +528,37 @@ class RapidShypService {
   async createReversePickup({
     orderId,
     returnRequestId,
-    pickupAddress, // Customer address (where to pick from)
-    deliveryAddress, // Seller address (where to deliver to)
+    pickupAddress, // Customer address (where to pick from) - This becomes PICKUP location
+    deliveryAddress, // Seller address (where to deliver to) - This becomes SHIPPING address
     weight,
     reason,
     type = 'return'
   }) {
+    // Split delivery address name into firstName and lastName for shipping address
+    const deliveryNameParts = String(deliveryAddress.name || '').trim().split(' ');
+    const deliveryFirstName = deliveryNameParts[0] || '';
+    const deliveryLastName = deliveryNameParts.slice(1).join(' ') || '';
+
+    // Split pickup address name into firstName and lastName for pickup location
+    const pickupNameParts = String(pickupAddress.name || '').trim().split(' ');
+    const pickupFirstName = pickupNameParts[0] || '';
+    const pickupLastName = pickupNameParts.slice(1).join(' ') || '';
+
     const payload = {
       orderId: String(returnRequestId || `RET_${orderId}_${Date.now()}`),
       orderDate: new Date().toISOString().split('T')[0],
       storeName: 'DEFAULT',
       billingIsShipping: true,
+      // SHIPPING ADDRESS = Seller's address (where to deliver/return the product to)
       shippingAddress: {
-        firstName: String(deliveryAddress.name || ''),
-        lastName: '',
+        firstName: deliveryFirstName,
+        lastName: deliveryLastName,
         addressLine1: String(deliveryAddress.address || ''),
-        addressLine2: '',
+        addressLine2: deliveryAddress.addressLine2 || '',
         pinCode: String(deliveryAddress.pincode || ''),
+        city: String(deliveryAddress.city || ''),
+        state: String(deliveryAddress.state || ''),
+        country: String(deliveryAddress.country || 'India'),
         email: String(deliveryAddress.email || ''),
         phone: String(deliveryAddress.phone || '')
       },
@@ -554,7 +568,8 @@ class RapidShypService {
         description: String(reason || ''),
         units: 1,
         unitPrice: 0,
-        tax: 0
+        tax: 0,
+        productWeight: parseFloat(weight) || 1
       }],
       paymentMethod: 'PREPAID',
       shippingCharges: 0,
@@ -563,16 +578,21 @@ class RapidShypService {
         packageLength: 20,
         packageBreadth: 10,
         packageHeight: 5,
-        packageWeight: parseFloat(weight) || 1
+        packageWeight: Math.max(parseFloat(weight) || 1, 0.5)
       },
+      // PICKUP LOCATION = Customer's address (where to pick the product from)
       pickupLocation: {
-        contactName: String(pickupAddress.name || ''),
+        contactName: pickupFirstName,
         pickupName: `Reverse Pickup - ${orderId}`,
+        pickupLastName: pickupLastName,
         pickupEmail: String(pickupAddress.email || ''),
         pickupPhone: String(pickupAddress.phone || ''),
         pickupAddress1: String(pickupAddress.address || ''),
-        pickupAddress2: '',
-        pinCode: String(pickupAddress.pincode || '')
+        pickupAddress2: pickupAddress.addressLine2 || '',
+        pinCode: String(pickupAddress.pincode || ''),
+        city: String(pickupAddress.city || ''),
+        state: String(pickupAddress.state || ''),
+        country: String(pickupAddress.country || 'India')
       }
     };
 
@@ -602,6 +622,16 @@ class RapidShypService {
     // But if cancellation succeeds, create explicit RTO shipment
     
     if (cancelResult.success || originalAwb) {
+      // Split return address name into firstName and lastName for shipping address
+      const returnNameParts = String(returnAddress.name || '').trim().split(' ');
+      const returnFirstName = returnNameParts[0] || '';
+      const returnLastName = returnNameParts.slice(1).join(' ') || '';
+
+      // Split pickup address name into firstName and lastName for pickup location
+      const pickupNameParts = String(pickupAddress.name || '').trim().split(' ');
+      const pickupFirstName = pickupNameParts[0] || '';
+      const pickupLastName = pickupNameParts.slice(1).join(' ') || '';
+
       // Create RTO shipment using create_order API
       // For RTO: pickup from customer, deliver to seller
       const rtoPayload = {
@@ -609,12 +639,16 @@ class RapidShypService {
         orderDate: new Date().toISOString().split('T')[0],
         storeName: 'DEFAULT',
         billingIsShipping: true,
+        // SHIPPING ADDRESS = Seller's address (where to return the product to)
         shippingAddress: {
-          firstName: String(returnAddress.name?.split(' ')[0] || returnAddress.name || ''),
-          lastName: String(returnAddress.name?.split(' ').slice(1).join(' ') || ''),
+          firstName: returnFirstName,
+          lastName: returnLastName,
           addressLine1: String(returnAddress.address || ''),
-          addressLine2: '',
+          addressLine2: returnAddress.addressLine2 || '',
           pinCode: String(returnAddress.pincode || ''),
+          city: String(returnAddress.city || ''),
+          state: String(returnAddress.state || ''),
+          country: String(returnAddress.country || 'India'),
           email: String(returnAddress.email || ''),
           phone: String(returnAddress.phone || '')
         },
@@ -636,14 +670,19 @@ class RapidShypService {
           packageHeight: 5,
           packageWeight: Math.max(parseFloat(weight) || 1, 0.5)
         },
+        // PICKUP LOCATION = Customer's address (where to pick the product from)
         pickupLocation: {
-          contactName: String(pickupAddress.name?.split(' ')[0] || pickupAddress.name || ''),
+          contactName: pickupFirstName,
           pickupName: `RTO Pickup - ${orderId}`,
+          pickupLastName: pickupLastName,
           pickupEmail: String(pickupAddress.email || ''),
           pickupPhone: String(pickupAddress.phone || ''),
           pickupAddress1: String(pickupAddress.address || ''),
-          pickupAddress2: '',
-          pinCode: String(pickupAddress.pincode || '')
+          pickupAddress2: pickupAddress.addressLine2 || '',
+          pinCode: String(pickupAddress.pincode || ''),
+          city: String(pickupAddress.city || ''),
+          state: String(pickupAddress.state || ''),
+          country: String(pickupAddress.country || 'India')
         }
       };
 

@@ -509,6 +509,15 @@ exports.createOrUpdateEventBanner = async (req, res) => {
     return res.status(403).json({ message: 'Only admin can manage event banner' });
   }
   const { title, description, endDate, product } = req.body;
+  
+  // Validate description word count (max 20 words)
+  if (description) {
+    const wordCount = description.trim().split(/\s+/).filter(word => word.length > 0).length;
+    if (wordCount > 20) {
+      return res.status(400).json({ message: 'Description cannot exceed 20 words' });
+    }
+  }
+  
   // Create NEW banner to allow multiple active banners
   const eventBanner = await EventBanner.create({ title, description, endDate, product, isActive: true });
   res.json(eventBanner);
@@ -543,17 +552,26 @@ exports.deleteEventBanner = async (req, res) => {
   res.json({ message: 'Event banner deleted' });
 }; 
 
-// Admin: Update specific event banner
-exports.updateEventBanner = async (req, res) => {
-  if (!req.user || req.user.role !== 'admin') {
-    return res.status(403).json({ message: 'Only admin can update event banner' });
-  }
-  const { id } = req.params;
-  const banner = await EventBanner.findById(id);
-  if (!banner) return res.status(404).json({ message: 'Event banner not found' });
-  const { title, description, endDate, product, isActive } = req.body || {};
-  if (title !== undefined) banner.title = title;
-  if (description !== undefined) banner.description = description;
+  // Admin: Update specific event banner
+  exports.updateEventBanner = async (req, res) => {
+    if (!req.user || req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only admin can update event banner' });
+    }
+    const { id } = req.params;
+    const banner = await EventBanner.findById(id);
+    if (!banner) return res.status(404).json({ message: 'Event banner not found' });
+    const { title, description, endDate, product, isActive } = req.body || {};
+    
+    // Validate description word count (max 20 words) if provided
+    if (description !== undefined && description) {
+      const wordCount = description.trim().split(/\s+/).filter(word => word.length > 0).length;
+      if (wordCount > 20) {
+        return res.status(400).json({ message: 'Description cannot exceed 20 words' });
+      }
+    }
+    
+    if (title !== undefined) banner.title = title;
+    if (description !== undefined) banner.description = description;
   if (endDate !== undefined) banner.endDate = endDate;
   if (product !== undefined) banner.product = product;
   if (typeof isActive === 'boolean') banner.isActive = isActive;
