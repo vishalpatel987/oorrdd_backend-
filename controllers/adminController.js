@@ -394,8 +394,32 @@ exports.getSalesReport = asyncHandler(async (req, res) => {
 // Top products by quantity and revenue
 exports.getTopProducts = asyncHandler(async (req, res) => {
   const limit = Number(req.query.limit || 10);
+  const period = req.query.period || null; // daily | monthly | yearly | null
+  const match = { 
+    orderStatus: { $nin: ['cancelled', 'refunded'] }, 
+    $or: [ 
+      { paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' }, 
+      { paymentMethod: 'cod', orderStatus: 'delivered' } 
+    ]
+  };
+  
+  if (period) {
+    const now = new Date();
+    let from;
+    if (period === 'daily') {
+      from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    } else if (period === 'monthly') {
+      // last 30 days
+      from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    } else if (period === 'yearly') {
+      // last 365 days
+      from = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+    }
+    if (from) match.createdAt = { $gte: from };
+  }
+  
   const data = await require('../models/Order').aggregate([
-    { $match: { orderStatus: { $nin: ['cancelled', 'refunded'] }, $or: [ { paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' }, { paymentMethod: 'cod', orderStatus: 'delivered' } ] } },
+    { $match: match },
     { $unwind: '$orderItems' },
     { $group: {
       _id: '$orderItems.product',
@@ -404,7 +428,8 @@ exports.getTopProducts = asyncHandler(async (req, res) => {
       revenue: { $sum: { $multiply: ['$orderItems.price', '$orderItems.quantity'] } }
     } },
     { $sort: { quantity: -1 } },
-    { $limit: limit }
+    { $limit: limit },
+    { $match: { quantity: { $gt: 0 } } } // Only include products with quantity > 0
   ]);
   res.json(data);
 });
@@ -418,7 +443,8 @@ exports.getTopVendors = asyncHandler(async (req, res) => {
     $or: [ 
       { paymentMethod: { $ne: 'cod' }, paymentStatus: 'paid' }, 
       { paymentMethod: 'cod', orderStatus: 'delivered' } 
-    ]
+    ],
+    seller: { $exists: true, $ne: null } // Ensure seller exists
   };
   if (period) {
     const now = new Date();
@@ -442,7 +468,17 @@ exports.getTopVendors = asyncHandler(async (req, res) => {
     { $limit: limit },
     { $lookup: { from: 'sellers', localField: '_id', foreignField: '_id', as: 'seller' } },
     { $unwind: { path: '$seller', preserveNullAndEmptyArrays: true } },
-    { $project: { _id: 1, orders: 1, revenue: 1, shopName: '$seller.shopName' } }
+    { 
+      $project: { 
+        _id: 1, 
+        orders: { $ifNull: ['$orders', 0] }, 
+        revenue: { $ifNull: ['$revenue', 0] }, 
+        shopName: { 
+          $ifNull: ['$seller.shopName', 'Unknown Vendor'] 
+        }
+      } 
+    },
+    { $match: { revenue: { $gt: 0 } } } // Only include vendors with revenue > 0
   ]);
   res.json(data);
 });
