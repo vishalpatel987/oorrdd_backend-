@@ -743,20 +743,27 @@ exports.requestCancelOrder = asyncHandler(async (req, res) => {
   order.cancellationRequestedAt = new Date();
   await order.save();
 
-  // Notify vendor by email
-  try {
-    const sendEmail = require('../utils/sendEmail');
-    const sellerEmail = order.seller?.email;
-    if (sellerEmail) {
-      await sendEmail({
-        email: sellerEmail,
-        subject: `Order ${order.orderNumber || order._id} cancellation requested`,
-        message: `A customer requested cancellation for order ${order.orderNumber || order._id}. Reason: ${order.cancellationRequestReason}`
-      });
-    }
-  } catch (e) {}
-
+  // Send response immediately (don't wait for email)
   res.json({ message: 'Cancellation requested. Admin will review this request.' });
+
+  // Notify vendor by email (non-blocking - run in background)
+  setImmediate(async () => {
+    try {
+      const sendEmail = require('../utils/sendEmail');
+      const sellerEmail = order.seller?.email;
+      if (sellerEmail) {
+        await sendEmail({
+          email: sellerEmail,
+          subject: `Order ${order.orderNumber || order._id} cancellation requested`,
+          message: `A customer requested cancellation for order ${order.orderNumber || order._id}. Reason: ${order.cancellationRequestReason}`
+        });
+        console.log(`Cancellation notification email sent to seller: ${sellerEmail}`);
+      }
+    } catch (emailErr) {
+      console.error('Failed to send cancellation notification email:', emailErr);
+      // Don't throw error - email failure shouldn't affect cancellation request
+    }
+  });
 });
 
 // Admin: approve cancellation (no refund here)
