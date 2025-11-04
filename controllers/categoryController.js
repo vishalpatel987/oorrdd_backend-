@@ -4,8 +4,11 @@ const cloudinary = require('../utils/cloudinary');
 
 exports.getCategories = asyncHandler(async (req, res) => {
   try {
-    // Fetch all categories as a flat list
-    const categories = await Category.find().lean();
+    // Fetch all categories with parent category populated
+    const categories = await Category.find()
+      .populate('parentCategory', 'name slug')
+      .lean()
+      .sort({ level: 1, name: 1 }); // Sort by level first (main categories first), then by name
     res.json(categories);
   } catch (error) {
     error.type = 'GetCategoriesError';
