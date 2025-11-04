@@ -645,18 +645,40 @@ exports.getWalletOverview = async (req, res) => {
     ]);
     const totalEarnings = (onlineEarningsAgg[0]?.total || 0) + (codEarningsAgg[0]?.total || 0);
 
+    // Convert seller.userId to ObjectId for proper matching
+    const mongoose = require('mongoose');
+    const sellerUserId = mongoose.Types.ObjectId.isValid(seller.userId) ? new mongoose.Types.ObjectId(seller.userId) : seller.userId;
+    
     const processedWithdrawalsAgg = await Withdrawal.aggregate([
       // NOTE: Withdrawal.seller references User, not Seller
-      { $match: { seller: seller.userId, $or: [ { status: 'paid' }, { status: 'processed' } ] } },
+      // Only count 'paid' and 'processed' as withdrawn (already paid to seller)
+      { $match: { 
+        seller: sellerUserId, 
+        $or: [ 
+          { status: 'paid' }, 
+          { status: 'processed' }
+        ] 
+      } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     const withdrawnAmount = processedWithdrawalsAgg[0]?.total || 0;
 
+    // Calculate available balance: Total Earnings - Total Withdrawn
     const availableBalance = Math.max(0, totalEarnings - withdrawnAmount);
+    
+    // Debug logging (remove in production)
+    console.log('Wallet Overview Debug:', {
+      sellerId: seller._id,
+      userId: seller.userId,
+      totalEarnings,
+      withdrawnAmount,
+      availableBalance,
+      calculation: `${totalEarnings} - ${withdrawnAmount} = ${availableBalance}`
+    });
 
-    // Sum of withdrawals not yet paid
+    // Sum of withdrawals not yet paid (pending, processing, approved are still pending)
     const pendingAgg = await Withdrawal.aggregate([
-      { $match: { seller: seller.userId, status: { $in: ['pending', 'processing', 'approved'] } } },
+      { $match: { seller: sellerUserId, status: { $in: ['pending', 'processing', 'approved'] } } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     const pendingAmount = pendingAgg[0]?.total || 0;
