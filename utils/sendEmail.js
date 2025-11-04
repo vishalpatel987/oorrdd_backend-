@@ -9,34 +9,65 @@ function stripHtml(html) {
 }
 
 const sendEmail = async (options) => {
-  const host = process.env.EMAIL_HOST || process.env.SMTP_HOST;
-  const port = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT) || 587;
-  const user = process.env.EMAIL_USER || process.env.SMTP_EMAIL;
-  const pass = process.env.EMAIL_PASS || process.env.SMTP_PASSWORD;
+  // Get SMTP config with proper fallbacks and trimming
+  const host = (process.env.EMAIL_HOST || process.env.SMTP_HOST || '').trim();
+  const port = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || '587') || 587;
+  const user = (process.env.EMAIL_USER || process.env.SMTP_EMAIL || '').trim();
+  const pass = (process.env.EMAIL_PASS || process.env.SMTP_PASSWORD || '').trim();
+  let emailFrom = (process.env.EMAIL_FROM || user || '').trim();
+  
+  // Remove quotes from EMAIL_FROM if present
+  emailFrom = emailFrom.replace(/^["']|["']$/g, '');
 
   // Check if SMTP is configured
   if (!host || !user || !pass) {
     const missing = [];
-    if (!host) missing.push('SMTP_HOST');
-    if (!user) missing.push('SMTP_EMAIL');
-    if (!pass) missing.push('SMTP_PASSWORD');
-    throw new Error(`Email configuration missing: ${missing.join(', ')}. Please configure SMTP settings in .env file.`);
+    if (!host) missing.push('EMAIL_HOST or SMTP_HOST');
+    if (!user) missing.push('EMAIL_USER or SMTP_EMAIL');
+    if (!pass) missing.push('EMAIL_PASS or SMTP_PASSWORD');
+    throw new Error(`Email configuration missing: ${missing.join(', ')}. Please configure SMTP settings in environment variables.`);
   }
 
-  // Log email details BEFORE sending
+  // Log email details BEFORE sending (but hide password in production)
   console.log('📮 sendEmail function called with:');
   console.log('   TO:', options.email);
-  console.log('   FROM:', process.env.EMAIL_FROM || user);
+  console.log('   FROM:', emailFrom || user);
   console.log('   SUBJECT:', options.subject);
   console.log('   SMTP HOST:', host);
+  console.log('   SMTP PORT:', port);
   console.log('   SMTP USER:', user);
+  console.log('   SMTP PASSWORD:', pass ? '***SET***' : '❌ MISSING');
+  console.log('   Environment:', process.env.NODE_ENV || 'development');
 
+  // Create transporter with proper TLS configuration for Gmail
   const transporter = nodemailer.createTransport({
     host,
     port,
-    secure: false,
-    auth: { user, pass },
+    secure: false, // true for 465, false for other ports (587 uses STARTTLS)
+    requireTLS: true, // Force STARTTLS for port 587
+    auth: { 
+      user, 
+      pass // App password with spaces will work correctly
+    },
+    tls: {
+      // Gmail has proper certificates, so we should always verify
+      // Set to false only if you're using a self-signed certificate
+      rejectUnauthorized: true
+    },
+    debug: process.env.NODE_ENV === 'development', // Enable debug logging in development
+    logger: process.env.NODE_ENV === 'development' // Enable logger in development
   });
+
+  // Verify transporter configuration
+  try {
+    await transporter.verify();
+    console.log('✅ SMTP server connection verified successfully');
+  } catch (verifyError) {
+    console.error('❌ SMTP server verification failed:');
+    console.error('   Error:', verifyError.message);
+    console.error('   Code:', verifyError.code);
+    throw new Error(`SMTP server verification failed: ${verifyError.message}`);
+  }
 
   // Build HTML using a standard brand layout unless explicitly disabled
   const htmlBody = options.rawHtml === true
@@ -50,7 +81,7 @@ const sendEmail = async (options) => {
       });
 
   const message = {
-    from: process.env.EMAIL_FROM,
+    from: emailFrom || user, // Use cleaned emailFrom or fallback to user
     to: options.email,  // recipient email
     subject: options.subject,
     text: options.text || stripHtml(options.message || options.html),
