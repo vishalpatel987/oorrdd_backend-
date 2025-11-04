@@ -28,6 +28,26 @@ exports.getCategory = asyncHandler(async (req, res) => {
 
 exports.createCategory = async (req, res) => {
   try {
+    // Validate required fields
+    const { name, slug, description, parentCategory } = req.body;
+    
+    if (!name || !slug) {
+      return res.status(400).json({ 
+        message: 'Name and slug are required',
+        received: { name: !!name, slug: !!slug }
+      });
+    }
+
+    // Check if category with same slug already exists
+    const existingCategory = await Category.findOne({ slug: slug.toLowerCase().trim() });
+    if (existingCategory) {
+      return res.status(400).json({ 
+        message: 'Category with this slug already exists',
+        slug: slug
+      });
+    }
+
+    // Handle image upload
     let imageUrl = '';
     if (req.file) {
       try {
@@ -40,30 +60,69 @@ exports.createCategory = async (req, res) => {
         });
         imageUrl = uploadResult.secure_url;
       } catch (uploadError) {
+        console.error('Image upload error:', uploadError);
         return res.status(500).json({ message: 'Image upload failed', error: uploadError.message });
       }
     }
+    
+    // Use default image if no image provided
     if (!imageUrl) {
-      imageUrl = 'https://res.cloudinary.com/demo/image/upload/v1690000000/categories/default-category.png'; // Replace with your own default image URL
+      imageUrl = 'https://res.cloudinary.com/demo/image/upload/v1690000000/categories/default-category.png';
     }
-    const { name, slug, description, parentCategory, level, isActive, isFeatured, sortOrder, metaTitle, metaDescription } = req.body;
+
+    // Validate parentCategory if provided
+    let parentCategoryId = null;
+    if (parentCategory && parentCategory !== '' && parentCategory !== 'null') {
+      const parentExists = await Category.findById(parentCategory);
+      if (!parentExists) {
+        return res.status(400).json({ message: 'Parent category not found' });
+      }
+      parentCategoryId = parentCategory;
+    }
+
+    // Create category
     const category = new Category({
-      name,
-      slug,
-      description,
+      name: name.trim(),
+      slug: slug.toLowerCase().trim(),
+      description: description ? description.trim() : '',
       image: imageUrl,
-      parentCategory,
-      level,
-      isActive,
-      isFeatured,
-      sortOrder,
-      metaTitle,
-      metaDescription
+      parentCategory: parentCategoryId,
+      isActive: req.body.isActive !== undefined ? req.body.isActive : true,
+      isFeatured: req.body.isFeatured !== undefined ? req.body.isFeatured : false,
+      sortOrder: req.body.sortOrder ? parseInt(req.body.sortOrder) : 0,
+      metaTitle: req.body.metaTitle ? req.body.metaTitle.trim() : '',
+      metaDescription: req.body.metaDescription ? req.body.metaDescription.trim() : ''
     });
+
     await category.save();
-    res.status(201).json(category);
+    res.status(201).json({ 
+      message: 'Category created successfully',
+      category 
+    });
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Create category error:', error);
+    
+    // Handle duplicate slug error
+    if (error.code === 11000) {
+      return res.status(400).json({ 
+        message: 'Category with this slug already exists',
+        field: 'slug'
+      });
+    }
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({ 
+        message: 'Validation error',
+        errors 
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message 
+    });
   }
 };
 
