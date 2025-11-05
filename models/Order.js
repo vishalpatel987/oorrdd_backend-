@@ -141,6 +141,9 @@ const orderSchema = new mongoose.Schema({
   cancellationRequestedAt: Date,
   cancellationApprovedAt: Date,
   cancellationApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  cancellationRejectedAt: Date,
+  cancellationRejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  cancellationRejectionReason: String,
   // refund workflow for online payments
   refundStatus: {
     type: String,

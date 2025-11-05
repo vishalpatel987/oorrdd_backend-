@@ -30,7 +30,9 @@ router.get('/orders', adminController.getOrders);
 router.get('/shipments', adminController.getShipments);
 router.get('/analytics', adminController.getAnalytics);
 router.get('/orders/cancellation-requests', adminController.getCancellationRequests);
+// Specific order routes must come before general /orders/:id routes
 router.put('/orders/:id/approve-cancel', orderController.adminApproveCancellation);
+router.put('/orders/:id/reject-cancel', orderController.adminRejectCancellation);
 router.put('/orders/:id/refund', orderController.adminRefundOrder);
 // Reports
 router.get('/reports/sales', adminController.getSalesReport);

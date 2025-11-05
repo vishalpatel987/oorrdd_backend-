@@ -786,6 +786,90 @@ exports.adminApproveCancellation = asyncHandler(async (req, res) => {
   res.json({ message: 'Order cancellation approved', order });
 });
 
+// Admin: reject cancellation request
+exports.adminRejectCancellation = asyncHandler(async (req, res) => {
+  const OrderModel = require('../models/Order');
+  const sendEmail = require('../utils/sendEmail');
+  
+  console.log('Admin reject cancellation called for order:', req.params.id);
+  const order = await OrderModel.findById(req.params.id);
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+
+  if (!order.cancellationRequested) {
+    return res.status(400).json({ message: 'No cancellation request found for this order' });
+  }
+
+  // Reject the cancellation request
+  order.cancellationRequested = false;
+  order.cancellationRequestReason = undefined;
+  order.cancellationRejectedAt = new Date();
+  order.cancellationRejectedBy = req.user._id;
+  order.cancellationRejectionReason = req.body.reason || 'Cancellation request rejected by admin';
+
+  await order.save();
+  
+  // Notify user and vendor by email (non-blocking)
+  setImmediate(async () => {
+    try {
+      const User = require('../models/User');
+      const Seller = require('../models/Seller');
+      
+      // Notify user
+      const user = await User.findById(order.user);
+      if (user?.email) {
+        const userMessage = `Dear ${user.name || 'Customer'},
+
+Your cancellation request for order ${order.orderNumber || order._id} has been rejected by the admin.
+
+${order.cancellationRejectionReason ? `Reason: ${order.cancellationRejectionReason}` : 'The cancellation request could not be processed at this time.'}
+
+Your order will continue to be processed as normal. If you have any concerns, please contact our support team.
+
+Thank you for your understanding.
+
+Best regards,
+MV Store Team`;
+
+        await sendEmail({
+          email: user.email,
+          subject: `Cancellation request rejected for order ${order.orderNumber || order._id}`,
+          message: userMessage
+        });
+        console.log(`Cancellation rejection notification email sent to user: ${user.email}`);
+      }
+
+      // Notify vendor
+      const seller = await Seller.findById(order.seller).populate('userId', 'email name');
+      if (seller?.userId?.email) {
+        const vendorMessage = `Dear ${seller.shopName || 'Vendor'},
+
+The cancellation request for order ${order.orderNumber || order._id} has been rejected by the admin.
+
+Customer: ${user?.name || user?.email || 'N/A'}
+${order.cancellationRejectionReason ? `Admin Reason: ${order.cancellationRejectionReason}` : 'The cancellation request was rejected.'}
+
+Please continue processing and shipping this order as normal.
+
+Thank you.
+
+Best regards,
+MV Store Admin Team`;
+
+        await sendEmail({
+          email: seller.userId.email,
+          subject: `Cancellation request rejected - Order ${order.orderNumber || order._id}`,
+          message: vendorMessage
+        });
+        console.log(`Cancellation rejection notification email sent to vendor: ${seller.userId.email}`);
+      }
+    } catch (emailErr) {
+      console.error('Failed to send cancellation rejection notification emails:', emailErr);
+    }
+  });
+
+  res.json({ message: 'Cancellation request rejected', order });
+});
+
 // Admin: refund now for approved cancellations (online payments)
 exports.adminRefundOrder = asyncHandler(async (req, res) => {
   const OrderModel = require('../models/Order');

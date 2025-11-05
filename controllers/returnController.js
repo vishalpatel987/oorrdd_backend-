@@ -252,7 +252,12 @@ exports.approveReturnRequest = asyncHandler(async (req, res) => {
 
   await doc.save();
 
-  // Deduct charges from vendor and admin wallets
+  // Send response immediately (don't wait for charges, pickup, or emails)
+  res.json(doc);
+
+  // Process charges, reverse pickup, and emails in background (non-blocking)
+  setImmediate(async () => {
+    // Deduct charges from vendor and admin wallets
   if (returnCharge > 0 && (vendorCharge > 0 || adminCharge > 0)) {
     try {
       const User = require('../models/User');
@@ -643,23 +648,29 @@ MV Store Support Team`;
           </div>
         </div>
       `;
-      await sendEmail({ email: doc.order.user.email, subject, message, html });
+        await sendEmail({ email: doc.order.user.email, subject, message, html });
+        console.log(`Approval notification email sent to user: ${doc.order.user.email}`);
+      }
+    } catch (e) {
+      console.error('Failed to send approval notification email to user:', e);
     }
-  } catch (e) {}
 
-  try {
-    // Notify vendor
-    const sellerDoc = await Seller.findById(doc.order.seller).populate('userId', 'email name');
+    try {
+      // Notify vendor
+      const Seller = require('../models/Seller');
+      const sellerDoc = await Seller.findById(doc.order.seller).populate('userId', 'email name');
     const vendorEmail = sellerDoc?.userId?.email || sellerDoc?.email;
     if (vendorEmail) {
       const subject = `Return/Replacement approved for order ${doc.order.orderNumber || doc.order._id}`;
       const message = `A ${doc.type} request has been approved. Reason: ${doc.reasonCategory}${doc.reasonText ? ' - ' + doc.reasonText : ''}.`;
       const html = `<p>Hi ${sellerDoc.userId?.name || sellerDoc.shopName || 'Vendor'},</p><p>A <b>${doc.type}</b> request has been <b>approved</b> for order <b>${doc.order.orderNumber || doc.order._id}</b>.</p><p><b>Reason:</b> ${doc.reasonCategory}${doc.reasonText ? ' - ' + doc.reasonText : ''}</p>`;
-      await sendEmail({ email: vendorEmail, subject, message, html });
+        await sendEmail({ email: vendorEmail, subject, message, html });
+        console.log(`Approval notification email sent to vendor: ${vendorEmail}`);
+      }
+    } catch (e) {
+      console.error('Failed to send approval notification email to vendor:', e);
     }
-  } catch (e) {}
-
-  res.json(doc);
+  });
 });
 
 // Admin: reject
@@ -670,9 +681,15 @@ exports.rejectReturnRequest = asyncHandler(async (req, res) => {
   doc.status = 'rejected';
   doc.rejectedAt = new Date();
   await doc.save();
-  // Notify user and vendor via email (best-effort)
-  try {
-    if (doc.order?.user?.email) {
+  
+  // Send response immediately (don't wait for emails)
+  res.json(doc);
+  
+  // Notify user and vendor via email (non-blocking - run in background)
+  setImmediate(async () => {
+    try {
+      const sendEmail = require('../utils/sendEmail');
+      if (doc.order?.user?.email) {
       const isReturn = doc.type === 'return';
       const requestTypeLabel = isReturn ? 'Return' : 'Replacement';
       const subject = `${requestTypeLabel} Request Rejected - Order ${doc.order.orderNumber || doc.order._id}`;
@@ -726,22 +743,28 @@ MV Store Support Team`;
           </div>
         </div>
       `;
-      await sendEmail({ email: doc.order.user.email, subject, message, html });
+        await sendEmail({ email: doc.order.user.email, subject, message, html });
+        console.log(`Rejection notification email sent to user: ${doc.order.user.email}`);
+      }
+    } catch (e) {
+      console.error('Failed to send rejection notification email to user:', e);
     }
-  } catch (e) {}
 
-  try {
-    const sellerDoc = await Seller.findById(doc.order.seller).populate('userId', 'email name');
-    const vendorEmail = sellerDoc?.userId?.email || sellerDoc?.email;
-    if (vendorEmail) {
-      const subject = `Return/Replacement rejected for order ${doc.order.orderNumber || doc.order._id}`;
-      const message = `A ${doc.type} request was rejected. Reason: ${doc.reasonCategory}${doc.reasonText ? ' - ' + doc.reasonText : ''}.`;
-      const html = `<p>Hi ${sellerDoc.userId?.name || sellerDoc.shopName || 'Vendor'},</p><p>A <b>${doc.type}</b> request has been <b>rejected</b> for order <b>${doc.order.orderNumber || doc.order._id}</b>.</p><p><b>Reason:</b> ${doc.reasonCategory}${doc.reasonText ? ' - ' + doc.reasonText : ''}</p>`;
-      await sendEmail({ email: vendorEmail, subject, message, html });
+    try {
+      const Seller = require('../models/Seller');
+      const sellerDoc = await Seller.findById(doc.order.seller).populate('userId', 'email name');
+      const vendorEmail = sellerDoc?.userId?.email || sellerDoc?.email;
+      if (vendorEmail) {
+        const subject = `Return/Replacement rejected for order ${doc.order.orderNumber || doc.order._id}`;
+        const message = `A ${doc.type} request was rejected. Reason: ${doc.reasonCategory}${doc.reasonText ? ' - ' + doc.reasonText : ''}.`;
+        const html = `<p>Hi ${sellerDoc.userId?.name || sellerDoc.shopName || 'Vendor'},</p><p>A <b>${doc.type}</b> request has been <b>rejected</b> for order <b>${doc.order.orderNumber || doc.order._id}</b>.</p><p><b>Reason:</b> ${doc.reasonCategory}${doc.reasonText ? ' - ' + doc.reasonText : ''}</p>`;
+        await sendEmail({ email: vendorEmail, subject, message, html });
+        console.log(`Rejection notification email sent to vendor: ${vendorEmail}`);
+      }
+    } catch (e) {
+      console.error('Failed to send rejection notification email to vendor:', e);
     }
-  } catch (e) {}
-
-  res.json(doc);
+  });
 });
 
 // Seller: list return requests for vendor's orders
