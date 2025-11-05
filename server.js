@@ -14,23 +14,37 @@ const Conversation = require('./models/Conversation');
 // Load environment variables - explicitly from backend/.env
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-// Debug: Log ADMIN_EMAIL and SMTP config (always log, but hide sensitive data in production)
+// Debug: Log ADMIN_EMAIL and Email config (EMAIL_* format is primary, SMTP_* is fallback)
 console.log('');
 console.log('========================================');
 console.log('🔍 ENVIRONMENT VARIABLES DEBUG');
 console.log('========================================');
 console.log('NODE_ENV:', process.env.NODE_ENV || 'development');
 console.log('ADMIN_EMAIL:', process.env.ADMIN_EMAIL || '❌ NOT SET');
-console.log('EMAIL_USER:', process.env.EMAIL_USER ? (process.env.NODE_ENV === 'production' ? '***SET***' : process.env.EMAIL_USER) : '❌ NOT SET');
-console.log('SMTP_EMAIL:', process.env.SMTP_EMAIL ? (process.env.NODE_ENV === 'production' ? '***SET***' : process.env.SMTP_EMAIL) : '❌ NOT SET');
-console.log('SMTP USER (resolved):', (process.env.EMAIL_USER || process.env.SMTP_EMAIL) ? (process.env.NODE_ENV === 'production' ? '***SET***' : (process.env.EMAIL_USER || process.env.SMTP_EMAIL)) : '❌ NOT SET');
+console.log('');
+console.log('📧 EMAIL CONFIGURATION (SMTP_* format is primary):');
+console.log('SMTP_HOST:', process.env.SMTP_HOST || '❌ NOT SET (will use EMAIL_HOST as fallback)');
+console.log('SMTP_PORT:', process.env.SMTP_PORT || '❌ NOT SET (will use EMAIL_PORT as fallback, default: 587)');
+console.log('SMTP_EMAIL:', process.env.SMTP_EMAIL ? (process.env.NODE_ENV === 'production' ? '✅ SET' : process.env.SMTP_EMAIL) : '❌ NOT SET (will use EMAIL_USER as fallback)');
+console.log('SMTP_PASSWORD:', process.env.SMTP_PASSWORD ? '✅ SET' : '❌ NOT SET (will use EMAIL_PASS as fallback)');
+console.log('EMAIL_FROM:', process.env.EMAIL_FROM || '❌ NOT SET');
+console.log('');
+console.log('📧 FALLBACK CONFIGURATION (EMAIL_* format):');
 console.log('EMAIL_HOST:', process.env.EMAIL_HOST || '❌ NOT SET');
-console.log('SMTP_HOST:', process.env.SMTP_HOST || '❌ NOT SET');
-console.log('SMTP HOST (resolved):', (process.env.EMAIL_HOST || process.env.SMTP_HOST) || '❌ NOT SET');
-console.log('EMAIL_PASS:', process.env.EMAIL_PASS ? '***SET***' : '❌ NOT SET');
-console.log('SMTP_PASSWORD:', process.env.SMTP_PASSWORD ? '***SET***' : '❌ NOT SET');
-console.log('SMTP PASSWORD (resolved):', (process.env.EMAIL_PASS || process.env.SMTP_PASSWORD) ? '***SET***' : '❌ NOT SET');
-console.log('EMAIL_FROM:', process.env.EMAIL_FROM || 'NOT SET');
+console.log('EMAIL_PORT:', process.env.EMAIL_PORT || '❌ NOT SET');
+console.log('EMAIL_USER:', process.env.EMAIL_USER ? (process.env.NODE_ENV === 'production' ? '✅ SET' : process.env.EMAIL_USER) : '❌ NOT SET');
+console.log('EMAIL_PASS:', process.env.EMAIL_PASS ? '✅ SET' : '❌ NOT SET');
+console.log('');
+console.log('📧 RESOLVED CONFIGURATION (what will be used):');
+const resolvedHost = process.env.SMTP_HOST || process.env.EMAIL_HOST;
+const resolvedPort = process.env.SMTP_PORT || process.env.EMAIL_PORT || '587';
+const resolvedUser = process.env.SMTP_EMAIL || process.env.EMAIL_USER;
+const resolvedPass = process.env.SMTP_PASSWORD || process.env.EMAIL_PASS;
+console.log('HOST:', resolvedHost || '❌ MISSING');
+console.log('PORT:', resolvedPort);
+console.log('USER:', resolvedUser ? (process.env.NODE_ENV === 'production' ? '✅ SET' : resolvedUser) : '❌ MISSING');
+console.log('PASSWORD:', resolvedPass ? '✅ SET' : '❌ MISSING');
+console.log('FROM:', process.env.EMAIL_FROM || resolvedUser || '❌ MISSING');
 console.log('========================================');
 console.log('');
 
@@ -71,16 +85,19 @@ const allowedOrigins = [
 
 // Add FRONTEND_URL_PRODUCTION if it exists
 if (process.env.FRONTEND_URL_PRODUCTION) {
-  allowedOrigins.push(process.env.FRONTEND_URL_PRODUCTION);
+  const frontendUrl = process.env.FRONTEND_URL_PRODUCTION.trim();
+  if (frontendUrl && !allowedOrigins.includes(frontendUrl)) {
+    allowedOrigins.push(frontendUrl);
+  }
 }
 
 // Log allowed origins for debugging
 console.log('Allowed CORS origins:', allowedOrigins);
 
-// More permissive CORS for production debugging
+// CORS configuration with proper preflight handling
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
+    // Allow requests with no origin (like mobile apps, Postman, or server-to-server requests)
     if (!origin) {
       console.log('Request with no origin - allowing');
       return callback(null, true);
@@ -89,30 +106,46 @@ app.use(cors({
     console.log('Request origin:', origin);
     console.log('Allowed origins:', allowedOrigins);
     
-    // For production, be more permissive during debugging
-    if (process.env.NODE_ENV === 'production') {
-      console.log('Production mode - allowing all origins for debugging');
+    // Check if origin is in allowed list
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      console.log('✅ Origin allowed:', origin);
       return callback(null, true);
     }
     
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      console.log('Origin allowed:', origin);
-      callback(null, true);
-    } else {
-      console.log('Origin blocked:', origin);
-      callback(new Error('Not allowed by CORS'));
+    // In production, allow all origins for debugging (remove this in production if you want strict CORS)
+    if (process.env.NODE_ENV === 'production') {
+      console.log('⚠️ Production mode - allowing origin:', origin);
+      return callback(null, true);
     }
+    
+    // Development: strict checking
+    console.log('❌ Origin blocked:', origin);
+    callback(new Error(`Not allowed by CORS: ${origin}`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers'
+  ],
+  exposedHeaders: ['Content-Length', 'Content-Type'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
 
 // Connect to MongoDB
 connectDB();
 
-// Security middleware
-app.use(helmet());
+// Security middleware - configure Helmet to work with CORS
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginEmbedderPolicy: false // Allow cross-origin iframes/embeds if needed
+}));
 app.use(compression());
 
 // Rate limiting
@@ -186,24 +219,33 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Email test endpoint (for debugging SMTP configuration)
+// Email test endpoint (for debugging Email configuration - SMTP_* format is primary)
 app.get('/api/test-email', async (req, res) => {
   const sendEmail = require('./utils/sendEmail');
   
   // Check if test email address is provided
   const testEmail = req.query.email || process.env.TEST_EMAIL || process.env.ADMIN_EMAIL;
   
-  // Check SMTP configuration
-  const host = (process.env.EMAIL_HOST || process.env.SMTP_HOST || '').trim();
-  const port = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || '587') || 587;
-  const user = (process.env.EMAIL_USER || process.env.SMTP_EMAIL || '').trim();
-  const pass = (process.env.EMAIL_PASS || process.env.SMTP_PASSWORD || '').trim();
+  // Check Email configuration - SMTP_* format is primary, EMAIL_* is fallback
+  const host = (process.env.SMTP_HOST || process.env.EMAIL_HOST || '').trim();
+  const port = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT || '587') || 587;
+  const user = (process.env.SMTP_EMAIL || process.env.EMAIL_USER || '').trim();
+  const pass = (process.env.SMTP_PASSWORD || process.env.EMAIL_PASS || '').trim();
   
   const configStatus = {
-    host: host ? '✅ SET' : '❌ MISSING',
-    port: port ? `✅ ${port}` : '❌ MISSING',
-    user: user ? '✅ SET' : '❌ MISSING',
-    pass: pass ? '✅ SET' : '❌ MISSING',
+    smtpHost: process.env.SMTP_HOST ? '✅ SET' : '❌ NOT SET',
+    emailHost: process.env.EMAIL_HOST ? '✅ SET (fallback)' : '❌ NOT SET',
+    resolvedHost: host ? '✅ SET' : '❌ MISSING',
+    smtpPort: process.env.SMTP_PORT ? `✅ ${process.env.SMTP_PORT}` : '❌ NOT SET',
+    emailPort: process.env.EMAIL_PORT ? `✅ ${process.env.EMAIL_PORT} (fallback)` : '❌ NOT SET',
+    resolvedPort: port ? `✅ ${port}` : '❌ MISSING',
+    smtpEmail: process.env.SMTP_EMAIL ? '✅ SET' : '❌ NOT SET',
+    emailUser: process.env.EMAIL_USER ? '✅ SET (fallback)' : '❌ NOT SET',
+    resolvedUser: user ? '✅ SET' : '❌ MISSING',
+    smtpPassword: process.env.SMTP_PASSWORD ? '✅ SET' : '❌ NOT SET',
+    emailPass: process.env.EMAIL_PASS ? '✅ SET (fallback)' : '❌ NOT SET',
+    resolvedPass: pass ? '✅ SET' : '❌ MISSING',
+    emailFrom: process.env.EMAIL_FROM || '❌ NOT SET',
     testEmail: testEmail || '❌ NOT PROVIDED (use ?email=your@email.com)'
   };
   
@@ -239,7 +281,8 @@ app.get('/api/test-email', async (req, res) => {
   // Just return config status if no email provided or missing config
   return res.json({
     success: false,
-    message: testEmail ? 'SMTP configuration incomplete' : 'Provide email address: /api/test-email?email=your@email.com',
+    message: testEmail ? 'Email configuration incomplete. Please set SMTP_HOST, SMTP_EMAIL, and SMTP_PASSWORD (or EMAIL_* as fallback)' : 'Provide email address: /api/test-email?email=your@email.com',
+    note: 'SMTP_* format is preferred (SMTP_HOST, SMTP_EMAIL, SMTP_PASSWORD). EMAIL_* format works as fallback.',
     config: configStatus,
     timestamp: new Date().toISOString()
   });

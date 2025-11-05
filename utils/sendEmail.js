@@ -9,23 +9,24 @@ function stripHtml(html) {
 }
 
 const sendEmail = async (options) => {
-  // Get SMTP config with proper fallbacks and trimming
-  const host = (process.env.EMAIL_HOST || process.env.SMTP_HOST || '').trim();
-  const port = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || '587') || 587;
-  const user = (process.env.EMAIL_USER || process.env.SMTP_EMAIL || '').trim();
-  const pass = (process.env.EMAIL_PASS || process.env.SMTP_PASSWORD || '').trim();
+  // Get SMTP config - SMTP_* format is primary, EMAIL_* is fallback for backward compatibility
+  // Priority: SMTP_HOST > EMAIL_HOST, SMTP_EMAIL > EMAIL_USER, SMTP_PASSWORD > EMAIL_PASS
+  const host = (process.env.SMTP_HOST || process.env.EMAIL_HOST || '').trim();
+  const port = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT || '587') || 587;
+  const user = (process.env.SMTP_EMAIL || process.env.EMAIL_USER || '').trim();
+  const pass = (process.env.SMTP_PASSWORD || process.env.EMAIL_PASS || '').trim();
   let emailFrom = (process.env.EMAIL_FROM || user || '').trim();
   
   // Remove quotes from EMAIL_FROM if present
   emailFrom = emailFrom.replace(/^["']|["']$/g, '');
 
-  // Check if SMTP is configured
+  // Check if SMTP is configured - SMTP_* format is primary
   if (!host || !user || !pass) {
     const missing = [];
-    if (!host) missing.push('EMAIL_HOST or SMTP_HOST');
-    if (!user) missing.push('EMAIL_USER or SMTP_EMAIL');
-    if (!pass) missing.push('EMAIL_PASS or SMTP_PASSWORD');
-    throw new Error(`Email configuration missing: ${missing.join(', ')}. Please configure SMTP settings in environment variables.`);
+    if (!host) missing.push('SMTP_HOST (or EMAIL_HOST as fallback)');
+    if (!user) missing.push('SMTP_EMAIL (or EMAIL_USER as fallback)');
+    if (!pass) missing.push('SMTP_PASSWORD (or EMAIL_PASS as fallback)');
+    throw new Error(`Email configuration missing: ${missing.join(', ')}. Please configure SMTP_* variables in environment (e.g., SMTP_HOST, SMTP_EMAIL, SMTP_PASSWORD).`);
   }
 
   // Log email details BEFORE sending (but hide password in production)

@@ -2,6 +2,27 @@
 
 Add these environment variables to your `.env` file in the backend directory:
 
+## ⚠️ IMPORTANT: NODE_ENV Configuration
+
+**❌ NEVER set `NODE_ENV` twice in the same file!**
+
+```env
+# ❌ WRONG - Don't do this:
+NODE_ENV=development
+NODE_ENV=production  # Last value will override!
+
+# ✅ CORRECT - Set only once:
+NODE_ENV=development  # For local development
+```
+
+**For Production (Render/Vercel):**
+- **DO NOT** set `NODE_ENV=production` in `.env` file
+- Set it in **Render Dashboard** → Environment tab → `NODE_ENV=production`
+
+---
+
+## Environment Variables Template
+
 ```env
 # Database Configuration
 MONGODB_URI=mongodb://localhost:27017/mv-ecommerce
@@ -12,7 +33,9 @@ JWT_EXPIRE=30d
 
 # Server Configuration
 PORT=5000
+# IMPORTANT: Set NODE_ENV only ONCE - for local development use:
 NODE_ENV=development
+# For production, set in Render dashboard, not here!
 
 # Frontend URL (for CORS)
 FRONTEND_URL=http://localhost:3000
@@ -121,9 +144,28 @@ RAPIDSHYP_CLIENT_ID=your_rapidshyp_client_id
 - See `DEPLOYMENT_SMTP_SETUP.md` for complete troubleshooting guide
 
 ## Important Notes:
+
+### NODE_ENV Configuration:
+- ⚠️ **NEVER set `NODE_ENV` twice in same file** - Last value will override!
+- ✅ **Local Development**: Set `NODE_ENV=development` in `.env` file
+- ✅ **Production (Render)**: Set `NODE_ENV=production` in Render dashboard, NOT in `.env` file
+- If you see both `NODE_ENV=development` and `NODE_ENV=production` in your `.env`, remove one!
+
+### General Notes:
 - Use test keys for development
 - Use live keys for production
 - Keep your keys secure and never commit them to version control
 - The `.env` file should be in your `.gitignore`
 - **For Render**: Set environment variables in the dashboard, not in `.env` file
 - **After setting env vars**: Always redeploy your service for changes to take effect
+
+### How to Check for Duplicate Variables:
+```bash
+# Windows PowerShell
+Get-Content backend\.env | Select-String "^NODE_ENV="
+
+# Linux/Mac
+grep "^NODE_ENV=" backend/.env
+```
+
+If output shows 2 lines, you have a duplicate! Remove one.

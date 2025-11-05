@@ -217,23 +217,32 @@ Please respond to the customer at: ${email}
       console.log('Admin Email (from .env):', adminEmail);
       console.log('User Email:', email);
       
-      // Check SMTP configuration before attempting to send
-      const smtpHost = process.env.EMAIL_HOST || process.env.SMTP_HOST;
-      const smtpUser = process.env.EMAIL_USER || process.env.SMTP_EMAIL;
-      const smtpPass = process.env.EMAIL_PASS || process.env.SMTP_PASSWORD;
+      // Check Email configuration - SMTP_* format is primary, EMAIL_* is fallback
+      const emailHost = process.env.SMTP_HOST || process.env.EMAIL_HOST;
+      const emailUser = process.env.SMTP_EMAIL || process.env.EMAIL_USER;
+      const emailPass = process.env.SMTP_PASSWORD || process.env.EMAIL_PASS;
       
-      console.log('SMTP Config Check:');
-      console.log('  SMTP_HOST:', smtpHost ? '✅ SET' : '❌ MISSING');
-      console.log('  SMTP_EMAIL:', smtpUser ? '✅ SET' : '❌ MISSING');
-      console.log('  SMTP_PASSWORD:', smtpPass ? '✅ SET' : '❌ MISSING');
+      console.log('📧 Email Configuration Check (SMTP_* format preferred):');
+      console.log('  SMTP_HOST:', process.env.SMTP_HOST ? '✅ SET' : '❌ NOT SET');
+      console.log('  EMAIL_HOST (fallback):', process.env.EMAIL_HOST ? '✅ SET' : '❌ NOT SET');
+      console.log('  Resolved HOST:', emailHost ? '✅ SET' : '❌ MISSING');
+      console.log('');
+      console.log('  SMTP_EMAIL:', process.env.SMTP_EMAIL ? '✅ SET' : '❌ NOT SET');
+      console.log('  EMAIL_USER (fallback):', process.env.EMAIL_USER ? '✅ SET' : '❌ NOT SET');
+      console.log('  Resolved USER:', emailUser ? '✅ SET' : '❌ MISSING');
+      console.log('');
+      console.log('  SMTP_PASSWORD:', process.env.SMTP_PASSWORD ? '✅ SET' : '❌ NOT SET');
+      console.log('  EMAIL_PASS (fallback):', process.env.EMAIL_PASS ? '✅ SET' : '❌ NOT SET');
+      console.log('  Resolved PASSWORD:', emailPass ? '✅ SET' : '❌ MISSING');
       
       // Verify admin and user emails are different
       if (adminEmail.toLowerCase() === email.toLowerCase()) {
         console.warn('⚠️ WARNING: Admin email and user email are the same. Skipping admin email.');
         adminEmailError = new Error('Admin and user emails are the same');
-      } else if (!smtpHost || !smtpUser || !smtpPass) {
-        console.error('❌ SMTP configuration missing! Cannot send email.');
-        adminEmailError = new Error('SMTP configuration missing');
+      } else if (!emailHost || !emailUser || !emailPass) {
+        console.error('❌ Email configuration missing! Cannot send email.');
+        console.error('   Please set SMTP_HOST, SMTP_EMAIL, and SMTP_PASSWORD (or EMAIL_* as fallback)');
+        adminEmailError = new Error('Email configuration missing');
       } else {
         console.log('Attempting to send email...');
         await sendEmail({
