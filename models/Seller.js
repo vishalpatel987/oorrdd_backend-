@@ -101,7 +101,7 @@ const sellerSchema = new mongoose.Schema({
   },
   commissionRate: {
     type: Number,
-    default: 10, // 10% commission by default
+    default: 7, // 7% commission by default
     min: 0,
     max: 100
   },

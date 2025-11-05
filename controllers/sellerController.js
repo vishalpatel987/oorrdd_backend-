@@ -98,22 +98,16 @@ exports.register = async (req, res) => {
       });
     }
 
-    // Handle document uploads
+    // Handle document uploads - ONLY PDF files allowed
     const documents = [];
-    const allowedMimeTypes = [
-      'application/pdf',
-      'image/jpeg',
-      'image/jpg',
-      'image/png',
-      'image/png'
-    ];
-    const allowedExtensions = ['.pdf', '.jpg', '.jpeg', '.png'];
+    const allowedMimeTypes = ['application/pdf'];
+    const allowedExtensions = ['.pdf'];
     
     if (req.files) {
       for (const fieldName in req.files) {
         const file = req.files[fieldName][0];
         if (file) {
-          // Validate file type
+          // Validate file type - ONLY PDF allowed
           const fileMimeType = file.mimetype || '';
           const fileName = file.originalname || '';
           const fileExtension = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
@@ -121,16 +115,17 @@ exports.register = async (req, res) => {
           const isValidMimeType = allowedMimeTypes.includes(fileMimeType);
           const isValidExtension = allowedExtensions.includes(fileExtension);
           
-          if (!isValidMimeType && !isValidExtension) {
-            console.error(`Invalid file type for ${fieldName}: ${fileMimeType} or ${fileExtension}`);
-            continue; // Skip this file
+          if (!isValidMimeType || !isValidExtension) {
+            console.error(`Invalid file type for ${fieldName}: ${fileMimeType} or ${fileExtension}. Only PDF files are allowed.`);
+            return res.status(400).json({ 
+              message: `Invalid file type for ${getDocumentName(fieldName)}. Only PDF files are allowed. Please upload a PDF file.`,
+              field: fieldName
+            });
           }
           
           try {
-            // Determine resource type based on file type
-            const isPdf = fileMimeType === 'application/pdf' || fileExtension === '.pdf';
-            // PDFs use 'raw' resource type, images use 'image' resource type
-            const resourceType = isPdf ? 'raw' : 'image';
+            // PDFs use 'raw' resource type in Cloudinary
+            const resourceType = 'raw';
             
             const uploadResult = await new Promise((resolve, reject) => {
               const stream = cloudinary.uploader.upload_stream({ 

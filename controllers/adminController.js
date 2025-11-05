@@ -10,7 +10,18 @@ exports.getSellers = asyncHandler(async (req, res) => {
     .populate('approvedBy', 'name email')
     .populate('rejectedBy', 'name email')
     .populate('suspendedBy', 'name email');
-  res.json(sellers);
+  
+  // Transform sellers: if commissionRate is 10 (old default), set to 7 (new default)
+  const transformedSellers = sellers.map(seller => {
+    const sellerObj = seller.toObject();
+    // If commissionRate is 10 (old default) or not set, use 7 (new default)
+    if (!sellerObj.commissionRate || sellerObj.commissionRate === 10) {
+      sellerObj.commissionRate = 7;
+    }
+    return sellerObj;
+  });
+  
+  res.json(transformedSellers);
 });
 
 // Approve a seller

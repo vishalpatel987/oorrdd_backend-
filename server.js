@@ -219,6 +219,118 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// PDF Proxy endpoint - serves PDFs from Cloudinary with inline headers for direct viewing
+app.get('/api/document/view', async (req, res) => {
+  try {
+    const { url } = req.query;
+    
+    if (!url) {
+      return res.status(400).json({ message: 'URL parameter is required' });
+    }
+    
+    // Decode URL if it's encoded
+    const decodedUrl = decodeURIComponent(url);
+    
+    // Validate URL is from Cloudinary (security check)
+    if (!decodedUrl.includes('cloudinary.com') && !decodedUrl.includes('res.cloudinary.com')) {
+      return res.status(400).json({ message: 'Invalid document URL' });
+    }
+    
+    console.log('📄 Fetching PDF from:', decodedUrl);
+    
+    // Fetch PDF from Cloudinary
+    const axios = require('axios');
+    const response = await axios.get(decodedUrl, {
+      responseType: 'stream',
+      headers: {
+        'Accept': 'application/pdf, */*',
+        'User-Agent': 'Mozilla/5.0'
+      },
+      validateStatus: (status) => status < 500, // Don't throw on 4xx errors
+      maxRedirects: 5,
+      timeout: 30000
+    });
+    
+    // Check if response is valid
+    if (response.status >= 400) {
+      return res.status(response.status).json({ message: 'Failed to fetch document from Cloudinary' });
+    }
+    
+    // Get content type from response - force PDF if it's a PDF file
+    let contentType = response.headers['content-type'] || 'application/pdf';
+    
+    // Check if URL is for a PDF (even if Cloudinary serves it with wrong content-type)
+    const urlLower = decodedUrl.toLowerCase();
+    const isPdfUrl = urlLower.includes('/raw/') || 
+                     urlLower.includes('resource_type=raw') ||
+                     urlLower.endsWith('.pdf') ||
+                     urlLower.includes('format=pdf');
+    
+    // Check if it's a vendor document (likely PDFs)
+    // Vendor documents are usually PDFs even if stored in /image/upload
+    const isVendorDocument = decodedUrl.includes('vendor-documents');
+    
+    // Check by query parameter if document type is specified
+    const docType = (req.query.type || '').toLowerCase();
+    const docName = (req.query.name || '').toLowerCase();
+    
+    // Check if document name indicates it's a PDF
+    const isPdfByName = docName.includes('pdf') || 
+                       docName.includes('aadhar') || 
+                       docName.includes('pan') ||
+                       docName.includes('gst') ||
+                       docName.includes('certificate') ||
+                       docName.includes('statement') ||
+                       docName.includes('license') ||
+                       docName.includes('proof') ||
+                       docName.includes('card');
+    
+    // Force PDF content type if it's a PDF file or vendor document
+    // Vendor documents are often PDFs even if Cloudinary serves them as images/jpeg
+    if (isPdfUrl || isVendorDocument || isPdfByName || docType.includes('pdf') || docType.includes('aadhar') || docType.includes('pan') || docType.includes('gst') || docType.includes('certificate') || docType.includes('statement') || docType.includes('license') || docType.includes('proof')) {
+      contentType = 'application/pdf';
+      console.log('📄 Forcing PDF content-type. Original:', response.headers['content-type'], 'Forced: application/pdf');
+      console.log('📄 URL:', decodedUrl);
+      console.log('📄 Document name:', docName || 'N/A');
+    } else {
+      console.log('📄 Content-Type from Cloudinary:', contentType);
+    }
+    
+    // Set headers for inline viewing (not download) - CRITICAL for browser inline viewing
+    res.setHeader('Content-Type', contentType);
+    
+    // For PDFs, use inline; for images, also use inline
+    if (contentType.includes('pdf') || isPdfUrl) {
+      res.setHeader('Content-Disposition', 'inline; filename="document.pdf"'); // 'inline' forces browser to display, not download
+    } else {
+      res.setHeader('Content-Disposition', 'inline; filename="document"');
+    }
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Access-Control-Allow-Origin', '*'); // Allow iframe/object embedding
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    
+    // Handle errors in stream
+    response.data.on('error', (error) => {
+      console.error('Stream error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ message: 'Error streaming PDF', error: error.message });
+      }
+    });
+    
+    // Pipe the PDF stream to response
+    response.data.pipe(res);
+    
+  } catch (error) {
+    console.error('PDF proxy error:', error.message);
+    console.error('Error stack:', error.stack);
+    if (!res.headersSent) {
+      res.status(500).json({ message: 'Failed to fetch document', error: error.message });
+    }
+  }
+});
+
 // Email test endpoint (for debugging Email configuration - SMTP_* format is primary)
 app.get('/api/test-email', async (req, res) => {
   const sendEmail = require('./utils/sendEmail');

@@ -8,6 +8,9 @@ const upload = multer({ storage });
 
 // Public routes
 router.post('/register', upload.fields([
+  { name: 'aadharCardFile', maxCount: 1 },
+  { name: 'panCardFile', maxCount: 1 },
+  { name: 'businessAddressProofFile', maxCount: 1 },
   { name: 'businessLicenseFile', maxCount: 1 },
   { name: 'taxCertificateFile', maxCount: 1 },
   { name: 'bankStatementFile', maxCount: 1 }
