@@ -101,10 +101,8 @@ exports.getUsers = asyncHandler(async (req, res) => {
 exports.createUser = asyncHandler(async (req, res) => {
   const { name, email, password, role, isActive } = req.body;
   
-  // Block admin creation - only one admin allowed
-  if (role === 'admin') {
-    return res.status(403).json({ message: 'Cannot create admin. Only one admin is allowed. Use /admin-register to register new admin if no admin exists.' });
-  }
+  // Multiple admins are now allowed - admin role can be assigned
+  // Admin can create other admins through this endpoint
   
   // Check if user already exists
   const existingUser = await User.findOne({ email });
@@ -135,19 +133,11 @@ exports.updateUser = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) return res.status(404).json({ message: 'User not found', route: req.originalUrl || req.url });
   
-  // Block admin role assignment - only one admin allowed
-  if (role === 'admin') {
-    return res.status(403).json({ message: 'Cannot assign admin role. Only one admin is allowed.' });
-  }
-  
-  // Prevent changing existing admin's role
-  if (user.role === 'admin' && role && role !== 'admin') {
-    return res.status(403).json({ message: 'Cannot change admin role. Admin role cannot be modified.' });
-  }
-  
+  // Multiple admins are now allowed - admin role can be assigned
+  // Admin can assign admin role to other users
   if (name) user.name = name;
   if (email) user.email = email;
-  if (role && role !== 'admin') user.role = role; // Only update if not admin
+  if (role) user.role = role; // Allow admin role assignment
   if (typeof isActive === 'boolean') user.isActive = isActive;
   await user.save();
   res.json(user);

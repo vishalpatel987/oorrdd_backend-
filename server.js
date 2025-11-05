@@ -131,10 +131,35 @@ app.use(cors({
     'Accept',
     'Origin',
     'Access-Control-Request-Method',
+    'Access-Control-Request-Headers',
+    'X-Requested-With'
+  ],
+  exposedHeaders: ['Content-Length', 'Content-Type', 'Authorization'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
+  maxAge: 86400 // Cache preflight requests for 24 hours
+}));
+
+// Handle preflight OPTIONS requests explicitly for all routes
+app.options('*', cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'production') {
+      return callback(null, true);
+    }
+    callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
     'Access-Control-Request-Headers'
   ],
-  exposedHeaders: ['Content-Length', 'Content-Type'],
-  preflightContinue: false,
   optionsSuccessStatus: 204
 }));
 
@@ -142,27 +167,38 @@ app.use(cors({
 connectDB();
 
 // Security middleware - configure Helmet to work with CORS
+// IMPORTANT: Helmet should be configured to not interfere with CORS
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
-  crossOriginEmbedderPolicy: false // Allow cross-origin iframes/embeds if needed
+  crossOriginEmbedderPolicy: false, // Allow cross-origin iframes/embeds if needed
+  contentSecurityPolicy: false // Disable CSP that might interfere with CORS
 }));
 app.use(compression());
 
-// Rate limiting
+// Rate limiting - skip OPTIONS requests (preflight)
+const rateLimitSkipPreflight = (limiter) => {
+  return (req, res, next) => {
+    if (req.method === 'OPTIONS') {
+      return next(); // Skip rate limiting for preflight requests
+    }
+    return limiter(req, res, next);
+  };
+};
+
 if (process.env.NODE_ENV === 'production') {
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 100, // strict in production
     message: 'Too many requests from this IP, please try again later.'
   });
-  app.use('/api/', limiter);
+  app.use('/api/', rateLimitSkipPreflight(limiter));
 } else {
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 10000, // very high for dev
     message: 'Too many requests from this IP, please try again later.'
   });
-  app.use('/api/', limiter);
+  app.use('/api/', rateLimitSkipPreflight(limiter));
 }
 
 // Body parser middleware

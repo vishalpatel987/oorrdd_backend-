@@ -8,7 +8,7 @@ router.post('/register', register);
 // Registration with email OTP
 router.post('/register/start', startRegistrationWithOTP);
 router.post('/register/verify', verifyRegistrationOTP);
-// Admin registration (only if no admin exists)
+// Admin registration (multiple admins allowed)
 router.post('/admin-register/start', startAdminRegistrationWithOTP);
 router.post('/admin-register/verify', verifyAdminRegistrationOTP);
 router.post('/login', login);

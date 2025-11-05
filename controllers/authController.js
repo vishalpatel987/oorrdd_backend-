@@ -424,7 +424,7 @@ const resetPassword = asyncHandler(async (req, res) => {
   return res.json({ message: 'Password reset successful' });
 });
 
-// Admin Registration with OTP (only if no admin exists)
+// Admin Registration with OTP (multiple admins allowed)
 const startAdminRegistrationWithOTP = asyncHandler(async (req, res) => {
   const { name, email, password } = req.body;
   const normalizedEmail = normalizeEmail(email);
@@ -433,16 +433,12 @@ const startAdminRegistrationWithOTP = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Name, email and password are required' });
   }
 
-  // Check if admin already exists
-  const adminExists = await User.findOne({ role: 'admin' });
-  if (adminExists) {
-    return res.status(403).json({ message: 'Admin already exists. Cannot register new admin.' });
-  }
+  // Multiple admins are now allowed - removed the check that blocked multiple admins
 
   // Check if user already exists
   let user = await User.findOne({ email: normalizedEmail }).select('+password');
-  if (user && user.isEmailVerified) {
-    return res.status(400).json({ message: 'User already exists' });
+  if (user && user.isEmailVerified && user.role === 'admin') {
+    return res.status(400).json({ message: 'Admin with this email already exists and is verified' });
   }
 
   // Create or update an unverified admin record
@@ -496,11 +492,7 @@ const verifyAdminRegistrationOTP = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Email and OTP are required' });
   }
 
-  // Check if admin already exists
-  const adminExists = await User.findOne({ role: 'admin', isEmailVerified: true });
-  if (adminExists) {
-    return res.status(403).json({ message: 'Admin already exists. Cannot register new admin.' });
-  }
+  // Multiple admins are now allowed - removed the check that blocked multiple admins
 
   const user = await User.findOne({ email: normalizedEmail, role: 'admin' }).select('+password');
   if (!user) {
