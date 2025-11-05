@@ -40,6 +40,8 @@ const sendEmail = async (options) => {
   console.log('   Environment:', process.env.NODE_ENV || 'development');
 
   // Create transporter with proper TLS configuration for Gmail
+  // For production deployments on Render/Vercel, we need more flexible TLS settings
+  const isProduction = process.env.NODE_ENV === 'production';
   const transporter = nodemailer.createTransport({
     host,
     port,
@@ -50,15 +52,20 @@ const sendEmail = async (options) => {
       pass // App password with spaces will work correctly
     },
     tls: {
-      // Gmail has proper certificates, so we should always verify
-      // Set to false only if you're using a self-signed certificate
-      rejectUnauthorized: true
+      // Certificate verification - set via environment variable if needed
+      // For Gmail and most providers, this should be true
+      // Only set to false if you have certificate chain issues
+      rejectUnauthorized: process.env.SMTP_REJECT_UNAUTHORIZED !== 'false',
+      minVersion: 'TLSv1.2'
     },
-    debug: process.env.NODE_ENV === 'development', // Enable debug logging in development
-    logger: process.env.NODE_ENV === 'development' // Enable logger in development
+    // Enable debug logging in production to diagnose issues (but hide sensitive data)
+    debug: isProduction ? false : true, // Set to true in production if needed for debugging
+    logger: isProduction // Enable logger in production to see connection issues
   });
 
   // Verify transporter configuration
+  // Skip verification in production if it's causing issues (uncomment if needed)
+  // For production, we'll verify on first send instead
   try {
     await transporter.verify();
     console.log('✅ SMTP server connection verified successfully');
@@ -66,7 +73,15 @@ const sendEmail = async (options) => {
     console.error('❌ SMTP server verification failed:');
     console.error('   Error:', verifyError.message);
     console.error('   Code:', verifyError.code);
-    throw new Error(`SMTP server verification failed: ${verifyError.message}`);
+    console.error('   Environment:', process.env.NODE_ENV || 'development');
+    
+    // In production, log but don't throw - try to send anyway
+    // Some SMTP servers verify differently on actual send vs verify
+    if (isProduction) {
+      console.warn('⚠️ Verification failed but continuing in production mode - will attempt to send');
+    } else {
+      throw new Error(`SMTP server verification failed: ${verifyError.message}`);
+    }
   }
 
   // Build HTML using a standard brand layout unless explicitly disabled
@@ -117,9 +132,22 @@ const sendEmail = async (options) => {
     console.error('   Error Command:', sendError.command);
     console.error('   Environment:', process.env.NODE_ENV || 'development');
     console.error('   SMTP Host:', host);
+    console.error('   SMTP Port:', port);
     console.error('   SMTP User:', user);
     console.error('   To Email:', options.email);
     console.error('   From Email:', message.from);
+    
+    // Additional debugging for common issues
+    if (sendError.code === 'EAUTH') {
+      console.error('   🔴 AUTHENTICATION ERROR: Check your email and app password');
+      console.error('   💡 For Gmail: Make sure you\'re using an App Password, not your regular password');
+    } else if (sendError.code === 'ECONNECTION' || sendError.code === 'ETIMEDOUT') {
+      console.error('   🔴 CONNECTION ERROR: Check your SMTP host and port');
+      console.error('   💡 For Render: Make sure your firewall allows outbound SMTP connections');
+    } else if (sendError.code === 'ESOCKET') {
+      console.error('   🔴 SOCKET ERROR: TLS/SSL certificate issue');
+      console.error('   💡 Try setting rejectUnauthorized: false in TLS config (not recommended for production)');
+    }
     
     // Re-throw with more context
     const errorMessage = `Failed to send email to ${options.email}: ${sendError.message}${sendError.code ? ` (Code: ${sendError.code})` : ''}`;

@@ -15,18 +15,23 @@ const register = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Name, email and password are required' });
   }
 
+  // Block admin/seller role in public registration - always create as customer
+  if (role === 'admin' || role === 'seller') {
+    return res.status(403).json({ message: 'Admin and seller roles cannot be created through public registration' });
+  }
+
   // Check if user exists
   const userExists = await User.findOne({ email: normalizedEmail });
   if (userExists) {
     return res.status(400).json({ message: 'User already exists' });
   }
 
-  // Create user
+  // Create user - always as customer
   const user = await User.create({
     name,
     email: normalizedEmail,
     password,
-    role
+    role: 'customer' // Force customer role
   });
 
   if (user) {
@@ -55,19 +60,24 @@ const startRegistrationWithOTP = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Name, email and password are required' });
   }
 
+  // Block admin/seller role in public registration
+  if (role === 'admin' || role === 'seller') {
+    return res.status(403).json({ message: 'Admin and seller roles cannot be created through public registration' });
+  }
+
   let user = await User.findOne({ email: normalizedEmail }).select('+password');
   if (user && user.isEmailVerified) {
     return res.status(400).json({ message: 'User already exists' });
   }
 
-  // Create or update an unverified user record
+  // Create or update an unverified user record - always as customer
   if (!user) {
-    user = await User.create({ name, email: normalizedEmail, password, role, isEmailVerified: false });
+    user = await User.create({ name, email: normalizedEmail, password, role: 'customer', isEmailVerified: false });
   } else {
     // keep latest provided details and reset password if provided
     user.name = name;
     user.password = password;
-    user.role = role;
+    user.role = 'customer'; // Force customer role
     user.isEmailVerified = false;
   }
 
@@ -414,10 +424,147 @@ const resetPassword = asyncHandler(async (req, res) => {
   return res.json({ message: 'Password reset successful' });
 });
 
+// Admin Registration with OTP (only if no admin exists)
+const startAdminRegistrationWithOTP = asyncHandler(async (req, res) => {
+  const { name, email, password } = req.body;
+  const normalizedEmail = normalizeEmail(email);
+  
+  if (!name || !normalizedEmail || !password) {
+    return res.status(400).json({ message: 'Name, email and password are required' });
+  }
+
+  // Check if admin already exists
+  const adminExists = await User.findOne({ role: 'admin' });
+  if (adminExists) {
+    return res.status(403).json({ message: 'Admin already exists. Cannot register new admin.' });
+  }
+
+  // Check if user already exists
+  let user = await User.findOne({ email: normalizedEmail }).select('+password');
+  if (user && user.isEmailVerified) {
+    return res.status(400).json({ message: 'User already exists' });
+  }
+
+  // Create or update an unverified admin record
+  if (!user) {
+    user = await User.create({ 
+      name, 
+      email: normalizedEmail, 
+      password, 
+      role: 'admin', 
+      isEmailVerified: false 
+    });
+  } else {
+    // Update existing user to admin role
+    user.name = name;
+    user.password = password;
+    user.role = 'admin';
+    user.isEmailVerified = false;
+  }
+
+  const otp = generateSixDigitOTP();
+  const hashed = hashValueSha256(otp);
+  user.emailVerificationOTP = hashed;
+  user.emailVerificationOTPExpire = new Date(Date.now() + 10 * 60 * 1000);
+  user.emailVerificationOTPAttempts = 0;
+  await user.save();
+
+  const subject = 'Verify your Admin Account - MV Store';
+  const html = `<p>Hi ${name || ''},</p>
+    <p>Your admin verification code is:</p>
+    <h2 style="letter-spacing:4px">${otp}</h2>
+    <p>This code will expire in 10 minutes.</p>
+    <p><strong>Important:</strong> This is for admin account registration only.</p>`;
+
+  try {
+    await sendEmail({ email: normalizedEmail, subject, message: `Your admin OTP is ${otp}`, html });
+    return res.status(200).json({ message: 'OTP sent to email', email: normalizedEmail });
+  } catch (err) {
+    user.emailVerificationOTP = undefined;
+    user.emailVerificationOTPExpire = undefined;
+    user.emailVerificationOTPAttempts = 0;
+    await user.save();
+    return res.status(500).json({ message: 'Failed to send OTP email' });
+  }
+});
+
+const verifyAdminRegistrationOTP = asyncHandler(async (req, res) => {
+  const { email, otp } = req.body;
+  const normalizedEmail = normalizeEmail(email);
+  
+  if (!normalizedEmail || !otp) {
+    return res.status(400).json({ message: 'Email and OTP are required' });
+  }
+
+  // Check if admin already exists
+  const adminExists = await User.findOne({ role: 'admin', isEmailVerified: true });
+  if (adminExists) {
+    return res.status(403).json({ message: 'Admin already exists. Cannot register new admin.' });
+  }
+
+  const user = await User.findOne({ email: normalizedEmail, role: 'admin' }).select('+password');
+  if (!user) {
+    return res.status(404).json({ message: 'Admin registration not found' });
+  }
+
+  if (user.isEmailVerified) {
+    return res.status(400).json({ message: 'Admin account already verified' });
+  }
+
+  // Verify OTP
+  if (!user.emailVerificationOTP || !user.emailVerificationOTPExpire) {
+    return res.status(400).json({ message: 'OTP not found or expired. Please request a new one.' });
+  }
+
+  if (new Date() > user.emailVerificationOTPExpire) {
+    user.emailVerificationOTP = undefined;
+    user.emailVerificationOTPExpire = undefined;
+    user.emailVerificationOTPAttempts = 0;
+    await user.save();
+    return res.status(400).json({ message: 'OTP expired. Please request a new one.' });
+  }
+
+  if (user.emailVerificationOTPAttempts >= 5) {
+    return res.status(429).json({ message: 'Too many OTP attempts. Please request a new OTP.' });
+  }
+
+  user.emailVerificationOTPAttempts += 1;
+  const hashedOTP = hashValueSha256(otp);
+  const isValid = hashedOTP === user.emailVerificationOTP;
+
+  if (!isValid) {
+    await user.save();
+    return res.status(400).json({ 
+      message: 'Invalid OTP', 
+      attemptsRemaining: 5 - user.emailVerificationOTPAttempts 
+    });
+  }
+
+  // Verify admin account
+  user.isEmailVerified = true;
+  user.emailVerificationOTP = undefined;
+  user.emailVerificationOTPExpire = undefined;
+  user.emailVerificationOTPAttempts = 0;
+  await user.save();
+
+  res.json({
+    token: generateToken(user._id),
+    user: {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role
+    },
+    message: 'Admin account verified successfully'
+  });
+});
+
 module.exports = {
   register,
   startRegistrationWithOTP,
   verifyRegistrationOTP,
+  startAdminRegistrationWithOTP,
+  verifyAdminRegistrationOTP,
   login,
   getMe,
   verifyEmail,

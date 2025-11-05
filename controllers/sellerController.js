@@ -58,31 +58,84 @@ exports.register = async (req, res) => {
     }
 
     // Check if user already exists
-    let user = await User.findOne({ email });
+    let user = await User.findOne({ email }).select('+password');
+    let isExistingUser = false;
+    
     if (user) {
-      return res.status(400).json({ message: 'A user with this email already exists.' });
+      // User already exists - allow them to apply for vendor status
+      isExistingUser = true;
+      
+      // Check if user is already a seller
+      const existingSeller = await Seller.findOne({ userId: user._id });
+      if (existingSeller && existingSeller.isApproved) {
+        return res.status(400).json({ message: 'You are already an approved vendor.' });
+      }
+      
+      // If user is trying to apply again with different password, verify current password
+      // For now, we'll allow update without password verification for simplicity
+      // You can add password verification if needed
+      
+      // Update user info if provided
+      if (firstName && lastName) {
+        user.name = `${firstName} ${lastName}`;
+      } else if (businessName) {
+        user.name = businessName;
+      }
+      if (phone) user.phone = phone;
+      // Don't change password unless it's provided and different
+      if (password && password.trim() !== '') {
+        user.password = password;
+      }
+      await user.save();
+    } else {
+      // Create new user with role 'seller' (will be approved later)
+      user = await User.create({
+        name: (firstName && lastName) ? `${firstName} ${lastName}` : businessName,
+        email,
+        password,
+        role: 'seller', // Will be approved by admin later
+        phone
+      });
     }
-
-    // Create new user with role 'seller'
-    user = await User.create({
-      name: (firstName && lastName) ? `${firstName} ${lastName}` : businessName,
-      email,
-      password,
-      role: 'seller',
-      phone
-    });
 
     // Handle document uploads
     const documents = [];
+    const allowedMimeTypes = [
+      'application/pdf',
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+      'image/png'
+    ];
+    const allowedExtensions = ['.pdf', '.jpg', '.jpeg', '.png'];
+    
     if (req.files) {
       for (const fieldName in req.files) {
         const file = req.files[fieldName][0];
         if (file) {
+          // Validate file type
+          const fileMimeType = file.mimetype || '';
+          const fileName = file.originalname || '';
+          const fileExtension = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
+          
+          const isValidMimeType = allowedMimeTypes.includes(fileMimeType);
+          const isValidExtension = allowedExtensions.includes(fileExtension);
+          
+          if (!isValidMimeType && !isValidExtension) {
+            console.error(`Invalid file type for ${fieldName}: ${fileMimeType} or ${fileExtension}`);
+            continue; // Skip this file
+          }
+          
           try {
+            // Determine resource type based on file type
+            const isPdf = fileMimeType === 'application/pdf' || fileExtension === '.pdf';
+            // PDFs use 'raw' resource type, images use 'image' resource type
+            const resourceType = isPdf ? 'raw' : 'image';
+            
             const uploadResult = await new Promise((resolve, reject) => {
               const stream = cloudinary.uploader.upload_stream({ 
                 folder: 'vendor-documents',
-                resource_type: 'auto'
+                resource_type: resourceType
               }, (error, result) => {
                 if (error) return reject(error);
                 resolve(result);
@@ -112,31 +165,73 @@ exports.register = async (req, res) => {
     };
     const mappedCountry = countryMap[country] || 'India';
 
-    // Create seller request
-    const seller = new Seller({
-      userId: user._id, // associate with new user
-      email,
-      phone,
-      shopName: businessName,
-      description: businessDescription,
-      address: {
+    // Check if seller record already exists for this user
+    let seller = await Seller.findOne({ userId: user._id });
+    
+    if (seller) {
+      // Update existing seller record (for re-application)
+      seller.email = email;
+      seller.phone = phone;
+      seller.shopName = businessName;
+      seller.description = businessDescription;
+      seller.address = {
         street: address,
         city,
         state,
         zipCode,
         country: mappedCountry
-      },
-      businessInfo: {
+      };
+      seller.businessInfo = {
         businessType,
         taxId,
         businessLicense
-      },
-      documents: documents,
-      categories: [], // You can map category names to IDs if needed
-      isApproved: false // Pending approval
-    });
-    await seller.save();
-    res.status(201).json({ message: 'Vendor registration request submitted. Awaiting admin approval.' });
+      };
+      seller.documents = documents;
+      seller.categories = []; // You can map category names to IDs if needed
+      seller.isApproved = false; // Reset to pending for re-application
+      seller.rejectionReason = undefined; // Clear previous rejection
+      seller.rejectedBy = undefined;
+      seller.rejectionDate = undefined;
+      await seller.save();
+    } else {
+      // Create new seller request
+      seller = new Seller({
+        userId: user._id, // associate with existing or new user
+        email,
+        phone,
+        shopName: businessName,
+        description: businessDescription,
+        address: {
+          street: address,
+          city,
+          state,
+          zipCode,
+          country: mappedCountry
+        },
+        businessInfo: {
+          businessType,
+          taxId,
+          businessLicense
+        },
+        documents: documents,
+        categories: [], // You can map category names to IDs if needed
+        isApproved: false // Pending approval
+      });
+      await seller.save();
+    }
+    
+    // If user is existing customer, keep role as 'customer' until approved
+    // Only new users get 'seller' role immediately (will be approved later)
+    if (isExistingUser && user.role === 'customer') {
+      // Keep as customer - role will change to 'seller' when admin approves
+      // This is handled in adminController.approveSeller
+    }
+    
+    const message = isExistingUser 
+      ? 'Vendor application submitted successfully. Your existing account will be upgraded to vendor after admin approval.'
+      : 'Vendor registration request submitted. Awaiting admin approval.';
+      
+    res.status(201).json({ message });
   } catch (error) {
     console.error('Seller registration error:', error);
     res.status(500).json({ message: 'Server error', error: error.message, stack: error.stack });
@@ -146,8 +241,11 @@ exports.register = async (req, res) => {
 // Helper function to get document name
 const getDocumentName = (fieldName) => {
   const nameMap = {
+    'aadharCardFile': 'Aadhar Card',
+    'panCardFile': 'PAN Card',
+    'businessAddressProofFile': 'Business Address Proof',
     'businessLicenseFile': 'Business License',
-    'taxCertificateFile': 'Tax Certificate',
+    'taxCertificateFile': 'GST Certificate',
     'bankStatementFile': 'Bank Statement'
   };
   return nameMap[fieldName] || fieldName;

@@ -88,8 +88,42 @@ RAPIDSHYP_CLIENT_ID=your_rapidshyp_client_id
 
 **Note:** The `RAPIDSHYP_CLIENT_ID` is optional and may not be required depending on your RapidShyp plan.
 
+## Email Configuration for Production (Render/Vercel)
+
+### For Gmail SMTP:
+1. **Generate App Password** (NOT your regular password):
+   - Go to https://myaccount.google.com/
+   - Security → 2-Step Verification → App passwords
+   - Create app password for "Mail"
+   - Use the 16-character password (no spaces)
+
+2. **Set in Render Dashboard**:
+   - Go to your service → Environment tab
+   - Add all SMTP variables:
+     ```
+     SMTP_HOST=smtp.gmail.com
+     SMTP_PORT=587
+     SMTP_EMAIL=your_email@gmail.com
+     SMTP_PASSWORD=your_16_char_app_password
+     EMAIL_FROM=your_email@gmail.com
+     ADMIN_EMAIL=admin@yourdomain.com
+     NODE_ENV=production
+     ```
+
+3. **Alternative SMTP Providers** (if Gmail blocks):
+   - SendGrid, Mailgun, or AWS SES
+   - See `DEPLOYMENT_SMTP_SETUP.md` for details
+
+### Troubleshooting Email Issues:
+- **EAUTH Error**: Wrong password or not using App Password
+- **ECONNECTION Error**: Check host/port or firewall
+- **ESOCKET Error**: TLS certificate issue (set `SMTP_REJECT_UNAUTHORIZED=false` if needed)
+- See `DEPLOYMENT_SMTP_SETUP.md` for complete troubleshooting guide
+
 ## Important Notes:
 - Use test keys for development
 - Use live keys for production
 - Keep your keys secure and never commit them to version control
 - The `.env` file should be in your `.gitignore`
+- **For Render**: Set environment variables in the dashboard, not in `.env` file
+- **After setting env vars**: Always redeploy your service for changes to take effect

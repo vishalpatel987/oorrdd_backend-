@@ -186,6 +186,65 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Email test endpoint (for debugging SMTP configuration)
+app.get('/api/test-email', async (req, res) => {
+  const sendEmail = require('./utils/sendEmail');
+  
+  // Check if test email address is provided
+  const testEmail = req.query.email || process.env.TEST_EMAIL || process.env.ADMIN_EMAIL;
+  
+  // Check SMTP configuration
+  const host = (process.env.EMAIL_HOST || process.env.SMTP_HOST || '').trim();
+  const port = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || '587') || 587;
+  const user = (process.env.EMAIL_USER || process.env.SMTP_EMAIL || '').trim();
+  const pass = (process.env.EMAIL_PASS || process.env.SMTP_PASSWORD || '').trim();
+  
+  const configStatus = {
+    host: host ? '✅ SET' : '❌ MISSING',
+    port: port ? `✅ ${port}` : '❌ MISSING',
+    user: user ? '✅ SET' : '❌ MISSING',
+    pass: pass ? '✅ SET' : '❌ MISSING',
+    testEmail: testEmail || '❌ NOT PROVIDED (use ?email=your@email.com)'
+  };
+  
+  // If email is provided, try to send test email
+  if (testEmail && host && user && pass) {
+    try {
+      await sendEmail({
+        email: testEmail,
+        subject: 'Test Email from MV Store Backend',
+        message: 'This is a test email to verify SMTP configuration is working correctly.',
+        html: '<p>This is a <strong>test email</strong> to verify SMTP configuration is working correctly.</p><p>If you received this, your email setup is working! ✅</p>'
+      });
+      
+      return res.json({
+        success: true,
+        message: 'Test email sent successfully!',
+        config: configStatus,
+        recipient: testEmail,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send test email',
+        error: error.message,
+        config: configStatus,
+        recipient: testEmail,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+  
+  // Just return config status if no email provided or missing config
+  return res.json({
+    success: false,
+    message: testEmail ? 'SMTP configuration incomplete' : 'Provide email address: /api/test-email?email=your@email.com',
+    config: configStatus,
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Timeout middleware: respond with 503 if request takes too long
 // BUT skip timeout for contact form (it handles its own response)
 app.use((req, res, next) => {
