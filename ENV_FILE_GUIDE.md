@@ -59,6 +59,9 @@ Search for `NODE_ENV` in your file. Agar dono milte hain:
 # For production - set in Render dashboard, not here
 NODE_ENV=development
 
+# Admin registration access code (required for creating admins)
+ADMIN_REGISTRATION_CODE=your_secure_admin_code
+
 PORT=5000
 
 # ==========================================

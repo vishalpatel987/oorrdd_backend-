@@ -426,11 +426,24 @@ const resetPassword = asyncHandler(async (req, res) => {
 
 // Admin Registration with OTP (multiple admins allowed)
 const startAdminRegistrationWithOTP = asyncHandler(async (req, res) => {
-  const { name, email, password } = req.body;
+  const { name, email, password, adminCode } = req.body;
   const normalizedEmail = normalizeEmail(email);
+  const configuredCodesRaw = process.env.ADMIN_REGISTRATION_CODES || process.env.ADMIN_REGISTRATION_CODE || '';
+  const configuredCodes = configuredCodesRaw
+    .split(',')
+    .map((code) => code.trim())
+    .filter(Boolean);
   
   if (!name || !normalizedEmail || !password) {
     return res.status(400).json({ message: 'Name, email and password are required' });
+  }
+
+  if (configuredCodes.length === 0) {
+    return res.status(500).json({ message: 'Admin registration code is not configured. Please contact support.' });
+  }
+
+  if (!adminCode || !configuredCodes.includes(adminCode.trim())) {
+    return res.status(403).json({ message: 'Invalid admin registration code' });
   }
 
   // Multiple admins are now allowed - removed the check that blocked multiple admins

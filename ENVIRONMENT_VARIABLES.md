@@ -37,6 +37,12 @@ PORT=5000
 NODE_ENV=development
 # For production, set in Render dashboard, not here!
 
+# Admin registration security
+# Single code:
+ADMIN_REGISTRATION_CODE=your_secure_admin_code
+# OR multiple codes separated by comma:
+# ADMIN_REGISTRATION_CODES=code1,code2,code3
+
 # Frontend URL (for CORS)
 FRONTEND_URL=http://localhost:3000
 FRONTEND_URL_PRODUCTION=https://your-domain.com

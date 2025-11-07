@@ -185,20 +185,29 @@ const rateLimitSkipPreflight = (limiter) => {
   };
 };
 
+// Rate limiting configuration
+// IMPORTANT: Only enable rate limiting in production
+// In development, rate limiting is completely disabled to prevent 429 errors
 if (process.env.NODE_ENV === 'production') {
+  console.log('🔒 Production mode: Rate limiting ENABLED (100 requests per 15 minutes)');
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 100, // strict in production
-    message: 'Too many requests from this IP, please try again later.'
+    message: 'Too many requests from this IP, please try again later.',
+    standardHeaders: true,
+    legacyHeaders: false,
   });
   app.use('/api/', rateLimitSkipPreflight(limiter));
 } else {
-  const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 10000, // very high for dev
-    message: 'Too many requests from this IP, please try again later.'
-  });
-  app.use('/api/', rateLimitSkipPreflight(limiter));
+  // Development: COMPLETELY DISABLE rate limiting
+  // This prevents 429 errors during development when React StrictMode causes double renders
+  console.log('');
+  console.log('⚠️  ========================================');
+  console.log('⚠️  Development mode: Rate limiting DISABLED');
+  console.log('⚠️  NODE_ENV:', process.env.NODE_ENV || 'undefined (defaulting to development)');
+  console.log('⚠️  ========================================');
+  console.log('');
+  // Don't apply rate limiting in development at all
 }
 
 // Body parser middleware
